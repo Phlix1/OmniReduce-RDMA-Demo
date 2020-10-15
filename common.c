@@ -277,7 +277,7 @@ int post_send(struct resources *res, int opcode, uint32_t len, uint32_t offset)
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp, &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[0], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -339,7 +339,7 @@ int post_send_client(struct resources *res, int opcode, uint32_t len, uint32_t o
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp, &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[slot%NUM_QPS], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -401,7 +401,7 @@ int post_send_server(struct resources *res, int opcode, uint32_t len, uint32_t o
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp, &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[slot%NUM_QPS], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -463,7 +463,7 @@ int post_receive(struct resources *res)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp, &rr, &bad_wr);
+	rc = ibv_post_recv(res->qp[0], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -472,7 +472,7 @@ int post_receive(struct resources *res)
 #endif
 	return rc;
 }
-int post_receive_server(struct resources *res, uint32_t offset)
+int post_receive_server(struct resources *res, uint32_t offset, int slot)
 {
 	struct ibv_recv_wr rr;
 	struct ibv_sge sge;
@@ -491,7 +491,7 @@ int post_receive_server(struct resources *res, uint32_t offset)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp, &rr, &bad_wr);
+	rc = ibv_post_recv(res->qp[slot%NUM_QPS], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -500,7 +500,7 @@ int post_receive_server(struct resources *res, uint32_t offset)
 #endif
 	return rc;
 }
-int post_receive_client(struct resources *res, uint32_t offset)
+int post_receive_client(struct resources *res, uint32_t offset, int slot)
 {
 	struct ibv_recv_wr rr;
 	struct ibv_sge sge;
@@ -521,7 +521,7 @@ int post_receive_client(struct resources *res, uint32_t offset)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp, &rr, &bad_wr);
+	rc = ibv_post_recv(res->qp[slot%NUM_QPS], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -719,24 +719,29 @@ int resources_create(struct resources *res, struct config_t config)
 	qp_init_attr.cap.max_recv_wr = QUEUE_DEPTH_DEFAULT;
 	qp_init_attr.cap.max_send_sge = 1;
 	qp_init_attr.cap.max_recv_sge = 1;
-	res->qp = ibv_create_qp(res->pd, &qp_init_attr);
-	if (!res->qp)
+	for(int i=0; i<NUM_QPS; i++)
 	{
+	    res->qp[i] = ibv_create_qp(res->pd, &qp_init_attr);
+	    if (!res->qp[i])
+	    {
 		fprintf(stderr, "failed to create QP\n");
 		rc = 1;
 		goto resources_create_exit;
+	    }
 	}
 #ifdef DEBUG
-	fprintf(stdout, "QP was created, QP number=0x%x\n", res->qp->qp_num);
+	fprintf(stdout, "QP was created, QP number=0x%x\n", res->qp[0]->qp_num);
 #endif
 resources_create_exit:
 	if (rc)
 	{
 		/* Error encountered, cleanup */
-		if (res->qp)
-		{
-			ibv_destroy_qp(res->qp);
-			res->qp = NULL;
+	        for(int i=0; i<NUM_QPS; i++){
+		    if (res->qp[i])
+		    {
+			ibv_destroy_qp(res->qp[i]);
+			res->qp[i] = NULL;
+		    }
 		}
 		if (res->mr)
 		{
@@ -931,7 +936,8 @@ int connect_qp(struct resources *res, struct config_t config)
 	/* exchange using TCP sockets info required to connect QPs */
 	local_con_data.addr = htonll((uintptr_t)res->buf);
 	local_con_data.rkey = htonl(res->mr->rkey);
-	local_con_data.qp_num = htonl(res->qp->qp_num);
+	for(int i=0; i<NUM_QPS; i++)
+	    local_con_data.qp_num[i] = htonl(res->qp[i]->qp_num);
 	local_con_data.lid = htons(res->port_attr.lid);
 	memcpy(local_con_data.gid, &my_gid, 16);
 #ifdef DEBUG
@@ -945,7 +951,8 @@ int connect_qp(struct resources *res, struct config_t config)
 	}
 	remote_con_data.addr = ntohll(tmp_con_data.addr);
 	remote_con_data.rkey = ntohl(tmp_con_data.rkey);
-	remote_con_data.qp_num = ntohl(tmp_con_data.qp_num);
+	for(int i=0; i<NUM_QPS; i++)
+	    remote_con_data.qp_num[i] = ntohl(tmp_con_data.qp_num[i]);
 	remote_con_data.lid = ntohs(tmp_con_data.lid);
 	memcpy(remote_con_data.gid, tmp_con_data.gid, 16);
 	/* save the remote side attributes, we will need it for the post SR */
@@ -953,7 +960,8 @@ int connect_qp(struct resources *res, struct config_t config)
 #ifdef DEBUG
 	fprintf(stdout, "Remote address = 0x%" PRIx64 "\n", remote_con_data.addr);
 	fprintf(stdout, "Remote rkey = 0x%x\n", remote_con_data.rkey);
-	fprintf(stdout, "Remote QP number = 0x%x\n", remote_con_data.qp_num);
+	for(int i=0; i<NUM_QPS; i++)
+	    fprintf(stdout, "Remote QP number = 0x%x\n", remote_con_data.qp_num[i]);
 	fprintf(stdout, "Remote LID = 0x%x\n", remote_con_data.lid);
 	if (config.gid_idx >= 0)
 	{
@@ -962,31 +970,29 @@ int connect_qp(struct resources *res, struct config_t config)
 				  p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 	}
 #endif
-	/* modify the QP to init */
-	rc = modify_qp_to_init(res->qp, config);
-	if (rc)
+	for(int i=0; i<NUM_QPS; i++)
 	{
+	    /* modify the QP to init */
+            rc = modify_qp_to_init(res->qp[i], config);
+	    if (rc)
+	    {
 		fprintf(stderr, "change QP state to INIT failed\n");
 		goto connect_qp_exit;
-	}
-	//rc = post_receive(res);
-	//if (rc)
-	//{
-	//	fprintf(stderr, "failed to post RR\n");
-	//	goto connect_qp_exit;
-	//}
-	/* modify the QP to RTR */
-	rc = modify_qp_to_rtr(res->qp, remote_con_data.qp_num, remote_con_data.lid, remote_con_data.gid, config);
-	if (rc)
-	{
+	    }
+	
+	    /* modify the QP to RTR */
+	    rc = modify_qp_to_rtr(res->qp[i], remote_con_data.qp_num[i], remote_con_data.lid, remote_con_data.gid, config);
+	    if (rc)
+	    {
 		fprintf(stderr, "failed to modify QP state to RTR\n");
 		goto connect_qp_exit;
-	}
-	rc = modify_qp_to_rts(res->qp, config);
-	if (rc)
-	{
+	    }
+	    rc = modify_qp_to_rts(res->qp[i], config);
+	    if (rc)
+	    {
 		fprintf(stderr, "failed to modify QP state to RTR\n");
 		goto connect_qp_exit;
+	    }
 	}
 #ifdef DEBUG
 	fprintf(stdout, "QP state was change to RTS\n");
@@ -1018,12 +1024,16 @@ connect_qp_exit:
 int resources_destroy(struct resources *res)
 {
 	int rc = 0;
-	if (res->qp)
-		if (ibv_destroy_qp(res->qp))
+
+	for(int i=0; i<NUM_QPS; i++)
+	{
+	    if (res->qp[i])
+		if (ibv_destroy_qp(res->qp[i]))
 		{
 			fprintf(stderr, "failed to destroy QP\n");
 			rc = 1;
 		}
+	}
 	if (res->mr)
 		if (ibv_dereg_mr(res->mr))
 		{

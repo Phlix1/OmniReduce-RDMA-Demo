@@ -16,7 +16,7 @@ void handle_recv(struct resources *res)
     uint32_t current_offset[NUM_SLOTS];
     for(int i=0; i<NUM_SLOTS; i++){
         current_offset[i] = i*MESSAGE_SIZE;
-        post_receive_server(res, current_offset[i]);
+        post_receive_server(res, current_offset[i], i);
     }
     while (1) {
         int ne = ibv_poll_cq(res->cq, MAX_CONCURRENT_WRITES * 2, (struct ibv_wc*)wc);
@@ -32,7 +32,8 @@ void handle_recv(struct resources *res)
 			int slot = 0;
 			slot = (next_offset/MESSAGE_SIZE)%NUM_SLOTS;
 #ifdef DEBUG
-			fprintf(stdout, "slot: %d; current offset: %d; immediate: %d\n", slot, current_offset[slot], imm_data);
+			fprintf(stdout, "%d %d\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS);
+			fprintf(stdout, "slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", slot, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
 			fprintf(stdout, "after receiving :%c, %c, %c, %c, %c, %c, %c, %c, %c, %c\n", res->buf[0], res->buf[1], res->buf[2], res->buf[3], res->buf[4], res->buf[5], res->buf[6], res->buf[7], res->buf[8], res->buf[9]);
 #endif
 
@@ -46,7 +47,7 @@ void handle_recv(struct resources *res)
 			    current_offset[slot] = next_offset;
 			else
 			    current_offset[slot] = slot*MESSAGE_SIZE;
-			post_receive_server(res, current_offset[slot]);
+			post_receive_server(res, current_offset[slot], slot);
 		    }												                        }
 	    }
 	}

@@ -2,7 +2,7 @@
 
 #CFLAGS  := -Wall -g -DDEBUG
 CFLAGS  := -Wall -g
-LD      := gcc
+LD      := cc
 LDLIBS  := ${LDLIBS} -lrdmacm -libverbs -lpthread
 
 APPS    := client server

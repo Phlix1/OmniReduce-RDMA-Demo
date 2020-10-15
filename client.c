@@ -32,9 +32,9 @@ void handle_recv(struct resources *res, int slots)
 #endif
 			if (imm_data<max_index[0])
 			{
-			    post_receive_client(res, imm_data);
 			    int next_offset = 0;
 			    int slot = (imm_data/MESSAGE_SIZE)%NUM_SLOTS;
+			    post_receive_client(res, imm_data, slot);
 			    if(imm_data+MESSAGE_SIZE*NUM_SLOTS>=DATA_SIZE)
 				next_offset = max_index[slot];
 			    else
@@ -56,6 +56,27 @@ void handle_recv(struct resources *res, int slots)
 	    }
 	}
     }
+}
+
+void process_per_thread(struct resources *res, uint32_t *next_offset)
+{
+    int ret = 0;
+    int n_messages = DATA_SIZE_PER_THREAD/MESSAGE_SIZE;
+    int first_burst = (n_messages < NUM_SLOTS) ? n_messages:NUM_SLOTS;
+    for (int i=0; i<first_burst; i++){
+        post_receive_client(res, i*MESSAGE_SIZE, i);    	    
+        if (i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS>=DATA_SIZE)
+	    next_offset[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
+        else
+	    next_offset[i] = i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS;
+        ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, i*MESSAGE_SIZE, next_offset[i], i);
+        if (ret)
+        {
+	    fprintf(stderr, "failed to post SR\n");
+	    exit(1);
+        }
+    }
+    handle_recv(res, first_burst);
 }
 /*****************************************************************************
 * Function: main
@@ -163,8 +184,6 @@ int main(int argc, char *argv[])
 	}
 	printf("Connected.\n");
 	/* begin to send data */
-	int n_messages = DATA_SIZE/MESSAGE_SIZE;
-        int ret = 0;
 	int num_rounds = 10;
         int round = 0;
 	struct timeval cur_time;
@@ -175,9 +194,11 @@ int main(int argc, char *argv[])
 	    for (int i = 0; i< DATA_SIZE; i++)
 	        res.buf[i] = 'a'+i%10;
 	    gettimeofday(&cur_time, NULL);
+	    /*
+	    int n_messages = DATA_SIZE/MESSAGE_SIZE;
             int first_burst = (n_messages < NUM_SLOTS) ? n_messages:NUM_SLOTS;
 	    for (int i=0; i<first_burst; i++){
-	        post_receive_client(&res, i*MESSAGE_SIZE);    	    
+	        post_receive_client(&res, i*MESSAGE_SIZE, i);    	    
 	        if (i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS>=DATA_SIZE)
 	            next_offset[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
 	        else
@@ -191,11 +212,13 @@ int main(int argc, char *argv[])
 	        }
 	    }
 	    handle_recv(&res, first_burst);
-	start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
-	gettimeofday(&cur_time, NULL);
-	diff_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000) - start_time_msec;
-	fprintf(stdout, "data size: %d Bytes; time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE ,diff_time_msec,(DATA_SIZE)*8.0/1000000/diff_time_msec);
-	round++;
+	    */
+	    process_per_thread(&res, next_offset);
+	    start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
+	    gettimeofday(&cur_time, NULL);
+	    diff_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000) - start_time_msec;
+	    fprintf(stdout, "data size: %d Bytes; time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE ,diff_time_msec,(DATA_SIZE)*8.0/1000000/diff_time_msec);
+	    round++;
 	}
 	rc = 0;
 main_exit:

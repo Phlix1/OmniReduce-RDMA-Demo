@@ -1,7 +1,6 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +26,12 @@
 #define RDMAMSGR "RDMA read operation "
 #define RDMAMSGW "RDMA write operation"
 #define MSG_SIZE 50*1024*1024
-#define DATA_SIZE 128*1024*1024
-#define MESSAGE_SIZE 1024
+#define MESSAGE_SIZE (1024)
 #define NUM_SLOTS 64
+#define NUM_QPS 4
+#define NUM_THREADS 1
+#define DATA_SIZE_PER_THREAD (128*1024*1024)
+#define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 static inline uint64_t htonll(uint64_t x) { return bswap_64(x); }
 static inline uint64_t ntohll(uint64_t x) { return bswap_64(x); }
@@ -55,7 +57,7 @@ struct cm_con_data_t
 {
 	uint64_t addr;   /* Buffer address */
 	uint32_t rkey;   /* Remote key */
-	uint32_t qp_num; /* QP number */
+	uint32_t qp_num[NUM_QPS]; /* QP number */
 	uint16_t lid;	/* LID of the IB port */
 	uint8_t gid[16]; /* gid */
 } __attribute__((packed));
@@ -72,7 +74,7 @@ struct resources
 	struct ibv_pd *pd;				   /* PD handle */
 	struct ibv_comp_channel* event_channel;	 /* Completion event channel, to wait for work completions */
 	struct ibv_cq *cq;				   /* CQ handle */
-	struct ibv_qp *qp;				   /* QP handle */
+	struct ibv_qp *qp[NUM_QPS];				   /* QP handle */
 	struct ibv_mr *mr;				   /* MR handle for buf */
 	char *buf;						   /* memory buffer pointer, used for RDMA and send ops */
 	int sock;						   /* TCP socket file descriptor */
@@ -87,8 +89,8 @@ int post_send(struct resources *res, int opcode, uint32_t len, uint32_t offset);
 int post_send_server(struct resources *res, int opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot);
 int post_send_client(struct resources *res, int opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot);
 int post_receive(struct resources *res);
-int post_receive_server(struct resources *res, uint32_t offset);
-int post_receive_client(struct resources *res, uint32_t offset);
+int post_receive_server(struct resources *res, uint32_t offset, int slot);
+int post_receive_client(struct resources *res, uint32_t offset, int slot);
 void resources_init(struct resources *res);
 int resources_create(struct resources *res, struct config_t config);
 int modify_qp_to_init(struct ibv_qp *qp, struct config_t config);
