@@ -1,5 +1,4 @@
 #include "common.h"
-
 /******************************************************************************
 * Function: sock_connect
 *
@@ -243,7 +242,7 @@ void *poll_cq(struct resources *res)
 * Description
 * This function will create and post a send work request
 ******************************************************************************/
-int post_send(struct resources *res, int opcode, uint32_t len, uint32_t offset)
+int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset)
 {
 	struct ibv_send_wr sr;
 	struct ibv_sge sge;
@@ -305,7 +304,7 @@ int post_send(struct resources *res, int opcode, uint32_t len, uint32_t offset)
 #endif
 	return rc;
 }
-int post_send_client(struct resources *res, int opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot)
+int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot)
 {
 	struct ibv_send_wr sr;
 	struct ibv_sge sge;
@@ -339,7 +338,7 @@ int post_send_client(struct resources *res, int opcode, uint32_t len, uint32_t o
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp[slot%NUM_QPS], &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -367,7 +366,7 @@ int post_send_client(struct resources *res, int opcode, uint32_t len, uint32_t o
 #endif
 	return rc;
 }
-int post_send_server(struct resources *res, int opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot)
+int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot)
 {
 	struct ibv_send_wr sr;
 	struct ibv_sge sge;
@@ -397,11 +396,11 @@ int post_send_server(struct resources *res, int opcode, uint32_t len, uint32_t o
 	{
 		sr.imm_data = imm;
 #ifdef DEBUG
-		//fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u, %s\n", imm, res->buf);
+		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u, %s\n", imm, res->buf);
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp[slot%NUM_QPS], &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -481,7 +480,7 @@ int post_receive_server(struct resources *res, uint32_t offset, int slot)
 
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	sge.addr = (uintptr_t)res->buf;
+	sge.addr = (uintptr_t)res->buf+slot*MESSAGE_SIZE;
 	sge.length = MESSAGE_SIZE;
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
@@ -491,7 +490,7 @@ int post_receive_server(struct resources *res, uint32_t offset, int slot)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp[slot%NUM_QPS], &rr, &bad_wr);
+	rc = ibv_post_recv(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -521,7 +520,7 @@ int post_receive_client(struct resources *res, uint32_t offset, int slot)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp[slot%NUM_QPS], &rr, &bad_wr);
+	rc = ibv_post_recv(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -570,7 +569,9 @@ void resources_init(struct resources *res)
 int resources_create(struct resources *res, struct config_t config)
 {
 	struct ibv_device **dev_list = NULL;
-	struct ibv_qp_init_attr qp_init_attr;
+	struct ibv_qp_init_attr qp_init_attr[NUM_THREADS];
+	//struct ibv_qp_init_attr qp_init_attr;
+	//struct ibv_qp_init_attr qp_init_attr1;
 	struct ibv_device *ib_dev = NULL;
 	size_t size;
 	int i;
@@ -676,18 +677,21 @@ int resources_create(struct resources *res, struct config_t config)
 	}
 	
 	cq_size = MAX_CONCURRENT_WRITES * 2;
-	res->cq = ibv_create_cq(res->ib_ctx, cq_size, NULL, NULL, 0);
-	if (!res->cq)
+	for(int i=0; i<NUM_THREADS; i++)
 	{
+	    res->cq[i] = ibv_create_cq(res->ib_ctx, cq_size, NULL, NULL, 0);
+	    if (!res->cq[i])
+	    {
 		fprintf(stderr, "failed to create CQ with %u entries\n", cq_size);
 		rc = 1;
 		goto resources_create_exit;
+	    }
 	}
 	/* allocate the memory buffer that will hold the data */
 	if (config.server_name)
 	    size = DATA_SIZE;
 	else
-	    size = NUM_SLOTS*MESSAGE_SIZE;
+	    size = NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS;
 	res->buf = (char *)malloc(size);
 	if (!res->buf)
 	{
@@ -709,19 +713,23 @@ int resources_create(struct resources *res, struct config_t config)
 	fprintf(stdout, "MR was registered with addr=%p, lkey=0x%x, rkey=0x%x, flags=0x%x\n",
 			res->buf, res->mr->lkey, res->mr->rkey, mr_flags);
 #endif
-	/* create the Queue Pair */
-	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
-	qp_init_attr.qp_type = IBV_QPT_RC;
-	qp_init_attr.sq_sig_all = 1;
-	qp_init_attr.send_cq = res->cq;
-	qp_init_attr.recv_cq = res->cq;
-	qp_init_attr.cap.max_send_wr = QUEUE_DEPTH_DEFAULT;
-	qp_init_attr.cap.max_recv_wr = QUEUE_DEPTH_DEFAULT;
-	qp_init_attr.cap.max_send_sge = 1;
-	qp_init_attr.cap.max_recv_sge = 1;
-	for(int i=0; i<NUM_QPS; i++)
+        for(int i=0; i<NUM_THREADS; i++)
 	{
-	    res->qp[i] = ibv_create_qp(res->pd, &qp_init_attr);
+	    memset(&qp_init_attr[i], 0, sizeof(ibv_qp_init_attr));
+	    qp_init_attr[i].qp_type = IBV_QPT_RC;
+	    //qp_init_attr[i].qp_type = IBV_QPT_UC;
+	    qp_init_attr[i].sq_sig_all = 1;
+	    qp_init_attr[i].send_cq = res->cq[i];
+	    qp_init_attr[i].recv_cq = res->cq[i];
+	    qp_init_attr[i].cap.max_send_wr = QUEUE_DEPTH_DEFAULT;
+	    qp_init_attr[i].cap.max_recv_wr = QUEUE_DEPTH_DEFAULT;
+	    qp_init_attr[i].cap.max_send_sge = 1;
+	    qp_init_attr[i].cap.max_recv_sge = 1;
+	}	
+	/* create the Queue Pair */
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	{
+	    res->qp[i] = ibv_create_qp(res->pd, &qp_init_attr[i/NUM_QPS]);
 	    if (!res->qp[i])
 	    {
 		fprintf(stderr, "failed to create QP\n");
@@ -730,13 +738,14 @@ int resources_create(struct resources *res, struct config_t config)
 	    }
 	}
 #ifdef DEBUG
-	fprintf(stdout, "QP was created, QP number=0x%x\n", res->qp[0]->qp_num);
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	    fprintf(stdout, "QP was created, QP number=0x%x\n", res->qp[i]->qp_num);
 #endif
 resources_create_exit:
 	if (rc)
 	{
 		/* Error encountered, cleanup */
-	        for(int i=0; i<NUM_QPS; i++){
+	        for(int i=0; i<NUM_QPS*NUM_THREADS; i++){
 		    if (res->qp[i])
 		    {
 			ibv_destroy_qp(res->qp[i]);
@@ -753,10 +762,12 @@ resources_create_exit:
 			free(res->buf);
 			res->buf = NULL;
 		}
-		if (res->cq)
-		{
-			ibv_destroy_cq(res->cq);
-			res->cq = NULL;
+                for(int i=0; i<NUM_THREADS; i++) {
+		    if (res->cq[i])
+		    {
+			ibv_destroy_cq(res->cq[i]);
+			res->cq[i] = NULL;
+		    }
 		}
 		if (res->pd)
 		{
@@ -780,6 +791,10 @@ resources_create_exit:
 			res->sock = -1;
 		}
 	}
+
+#ifdef DEBUG
+        fprintf(stdout, "Resouces were created, status=%d\n", rc);
+#endif
 	return rc;
 }
 /******************************************************************************
@@ -936,7 +951,7 @@ int connect_qp(struct resources *res, struct config_t config)
 	/* exchange using TCP sockets info required to connect QPs */
 	local_con_data.addr = htonll((uintptr_t)res->buf);
 	local_con_data.rkey = htonl(res->mr->rkey);
-	for(int i=0; i<NUM_QPS; i++)
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
 	    local_con_data.qp_num[i] = htonl(res->qp[i]->qp_num);
 	local_con_data.lid = htons(res->port_attr.lid);
 	memcpy(local_con_data.gid, &my_gid, 16);
@@ -951,7 +966,7 @@ int connect_qp(struct resources *res, struct config_t config)
 	}
 	remote_con_data.addr = ntohll(tmp_con_data.addr);
 	remote_con_data.rkey = ntohl(tmp_con_data.rkey);
-	for(int i=0; i<NUM_QPS; i++)
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
 	    remote_con_data.qp_num[i] = ntohl(tmp_con_data.qp_num[i]);
 	remote_con_data.lid = ntohs(tmp_con_data.lid);
 	memcpy(remote_con_data.gid, tmp_con_data.gid, 16);
@@ -960,7 +975,7 @@ int connect_qp(struct resources *res, struct config_t config)
 #ifdef DEBUG
 	fprintf(stdout, "Remote address = 0x%" PRIx64 "\n", remote_con_data.addr);
 	fprintf(stdout, "Remote rkey = 0x%x\n", remote_con_data.rkey);
-	for(int i=0; i<NUM_QPS; i++)
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
 	    fprintf(stdout, "Remote QP number = 0x%x\n", remote_con_data.qp_num[i]);
 	fprintf(stdout, "Remote LID = 0x%x\n", remote_con_data.lid);
 	if (config.gid_idx >= 0)
@@ -970,7 +985,7 @@ int connect_qp(struct resources *res, struct config_t config)
 				  p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 	}
 #endif
-	for(int i=0; i<NUM_QPS; i++)
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
 	{
 	    /* modify the QP to init */
             rc = modify_qp_to_init(res->qp[i], config);
@@ -998,7 +1013,7 @@ int connect_qp(struct resources *res, struct config_t config)
 	fprintf(stdout, "QP state was change to RTS\n");
 #endif
 	/* sync to make sure that both sides are in states that they can connect to prevent packet loose */
-	if (sock_sync_data(res->sock, 1, "Q", &temp_char)) /* just send a dummy char back and forth */
+	if (sock_sync_data(res->sock, 1, (char *)"Q", &temp_char)) /* just send a dummy char back and forth */
 	{
 		fprintf(stderr, "sync error after QPs are were moved to RTS\n");
 		rc = 1;
@@ -1025,7 +1040,7 @@ int resources_destroy(struct resources *res)
 {
 	int rc = 0;
 
-	for(int i=0; i<NUM_QPS; i++)
+	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
 	{
 	    if (res->qp[i])
 		if (ibv_destroy_qp(res->qp[i]))
@@ -1042,12 +1057,14 @@ int resources_destroy(struct resources *res)
 		}
 	if (res->buf)
 		free(res->buf);
-	if (res->cq)
-		if (ibv_destroy_cq(res->cq))
+	for(int i=0; i<NUM_THREADS; i++){
+	    if (res->cq[i])
+		if (ibv_destroy_cq(res->cq[i]))
 		{
 			fprintf(stderr, "failed to destroy CQ\n");
 			rc = 1;
 		}
+	}
 	if (res->pd)
 		if (ibv_dealloc_pd(res->pd))
 		{

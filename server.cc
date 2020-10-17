@@ -10,16 +10,17 @@ struct config_t server_config = {
 };
 void handle_recv(struct resources *res)
 {
+    uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
     uint32_t max_index = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE;
     uint32_t next_offset = 0;
     struct ibv_wc wc[MAX_CONCURRENT_WRITES * 2];
-    uint32_t current_offset[NUM_SLOTS];
+    uint32_t current_offset[NUM_SLOTS*NUM_THREADS];
     for(int i=0; i<NUM_SLOTS; i++){
-        current_offset[i] = i*MESSAGE_SIZE;
-        post_receive_server(res, current_offset[i], i);
+        current_offset[i] = start_offset+i*MESSAGE_SIZE;
+        post_receive_server(res, current_offset[i], i+NUM_SLOTS*res->threadId);
     }
     while (1) {
-        int ne = ibv_poll_cq(res->cq, MAX_CONCURRENT_WRITES * 2, (struct ibv_wc*)wc);
+        int ne = ibv_poll_cq(res->cq[res->threadId], MAX_CONCURRENT_WRITES * 2, (struct ibv_wc*)wc);
 	if (ne>0){
             for (int i = 0; i < ne; ++i)
 	    {
@@ -33,11 +34,11 @@ void handle_recv(struct resources *res)
 			slot = (next_offset/MESSAGE_SIZE)%NUM_SLOTS;
 #ifdef DEBUG
 			fprintf(stdout, "%d %d\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS);
-			fprintf(stdout, "slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", slot, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
+			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
 			fprintf(stdout, "after receiving :%c, %c, %c, %c, %c, %c, %c, %c, %c, %c\n", res->buf[0], res->buf[1], res->buf[2], res->buf[3], res->buf[4], res->buf[5], res->buf[6], res->buf[7], res->buf[8], res->buf[9]);
 #endif
-
-			ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, slot);
+			post_receive_server(res, current_offset[slot], slot+NUM_SLOTS*res->threadId);
+			ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, slot+NUM_SLOTS*res->threadId);
 			if(ret)
 			{
 			    fprintf(stderr, "failed to post SR\n");
@@ -46,12 +47,16 @@ void handle_recv(struct resources *res)
 			if (next_offset<max_index)
 			    current_offset[slot] = next_offset;
 			else
-			    current_offset[slot] = slot*MESSAGE_SIZE;
-			post_receive_server(res, current_offset[slot], slot);
+			    current_offset[slot] = start_offset+slot*MESSAGE_SIZE;
 		    }												                        }
 	    }
 	}
     }
+}
+void *process_per_thread(void *arg)
+{
+    struct resources *res = (struct resources *)arg;
+    handle_recv(res);
 }
 /*****************************************************************************
 * Function: main
@@ -77,6 +82,16 @@ int main(int argc, char *argv[])
 	while (1)
 	{
 		int c;
+		static struct option long_options_tmp[8];
+		long_options_tmp[0].name="port";long_options_tmp[0].has_arg=1;long_options_tmp[0].val='p';
+		long_options_tmp[1].name="ib-dev";long_options_tmp[1].has_arg=1;long_options_tmp[1].val='d';
+		long_options_tmp[2].name="ib-port";long_options_tmp[2].has_arg=1;long_options_tmp[2].val='i';
+		long_options_tmp[3].name="gid-idx";long_options_tmp[3].has_arg=1;long_options_tmp[3].val='g';
+		long_options_tmp[4].name="service-level";long_options_tmp[4].has_arg=1;long_options_tmp[4].val='s';
+		long_options_tmp[5].name="desired-rate";long_options_tmp[5].has_arg=1;long_options_tmp[5].val='r';
+		long_options_tmp[6].name="help";long_options_tmp[6].has_arg=0;long_options_tmp[6].val='\0';
+		long_options_tmp[7].name="NULL";long_options_tmp[7].has_arg=0;long_options_tmp[7].val='\0';
+		/*
 		static struct option long_options[] = {
 			{.name = "port", .has_arg = 1, .val = 'p'},
 			{.name = "ib-dev", .has_arg = 1, .val = 'd'},
@@ -85,8 +100,9 @@ int main(int argc, char *argv[])
 			{.name = "service-level", .has_arg = 1, .val = 's'},
 			{.name = "help", .has_arg = 0, .val = 'h'},
 			{.name = NULL, .has_arg = 0, .val = '\0'}
-        };
-		c = getopt_long(argc, argv, "p:d:i:g:s:h:", long_options, NULL);
+                };
+		*/
+		c = getopt_long(argc, argv, "p:d:i:g:s:h:", long_options_tmp, NULL);
 		if (c == -1)
 			break;
 		switch (c)
@@ -135,18 +151,45 @@ int main(int argc, char *argv[])
 	if (resources_create(&res, server_config))
 	{
 		fprintf(stderr, "failed to create resources\n");
-		goto main_exit;
+	        if (resources_destroy(&res))
+	        {
+		        fprintf(stderr, "failed to destroy resources\n");
+		        rc = 1;
+	        }
+	        if (server_config.dev_name)
+		        free((char *)server_config.dev_name);
+	        fprintf(stdout, "\ntest result is %d\n", rc);
+	        return rc;
 	}
 	/* connect the QPs */
+	
 	if (connect_qp(&res, server_config))
 	{
 		fprintf(stderr, "failed to connect QPs\n");
-		goto main_exit;
+	        if (resources_destroy(&res))
+	        {
+		        fprintf(stderr, "failed to destroy resources\n");
+		        rc = 1;
+	        }
+	        if (server_config.dev_name)
+		        free((char *)server_config.dev_name);
+	        fprintf(stdout, "\ntest result is %d\n", rc);
+	        return rc;
 	}
 	printf("Connected.\n");
-        handle_recv(&res);
+        //handle_recv(&res);
+	
+	pthread_t threadIds[NUM_THREADS];
+	struct resources res_copy[NUM_THREADS];
+	for (int i=0; i<NUM_THREADS; i++) {
+	    memcpy(&res_copy[i], &res, sizeof(struct resources));
+	    res_copy[i].threadId = i;
+	    pthread_create(&threadIds[i], NULL, process_per_thread, &res_copy[i]);
+	}
+	for (int i=0; i<NUM_THREADS; i++) {
+	    pthread_join(threadIds[i], NULL);
+	}
 	rc = 0;
-main_exit:
 	if (resources_destroy(&res))
 	{
 		fprintf(stderr, "failed to destroy resources\n");
@@ -155,5 +198,6 @@ main_exit:
 	if (server_config.dev_name)
 		free((char *)server_config.dev_name);
 	fprintf(stdout, "\ntest result is %d\n", rc);
+	
 	return rc;
 }
