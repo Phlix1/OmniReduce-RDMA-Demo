@@ -31,9 +31,9 @@
 #define MSG_SIZE 50*1024*1024
 #define MESSAGE_SIZE (1024)
 #define NUM_SLOTS 64
-#define NUM_QPS 4
+#define NUM_QPS 1
 #define NUM_THREADS 8
-#define DATA_SIZE_PER_THREAD (128*1024*1024)
+#define DATA_SIZE_PER_THREAD (16*1024*1024)
 #define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 static inline uint64_t htonll(uint64_t x) { return bswap_64(x); }

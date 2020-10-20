@@ -243,11 +243,13 @@ int main(int argc, char *argv[])
 	}
 	printf("Connected.\n");
 	// begin to send data 
+	int warmups = 10;
 	int num_rounds = 10;
         int round = 0;
 	struct timeval cur_time;
         unsigned long start_time_msec;
         unsigned long diff_time_msec;
+	unsigned long avg_time_msec=0;
 	pthread_t threadIds[NUM_THREADS];
 	struct resources res_copy[NUM_THREADS];
 	for (int i=0; i<NUM_THREADS; i++) {
@@ -255,7 +257,7 @@ int main(int argc, char *argv[])
 	    res_copy[i].threadId = i;
 	    pthread_create(&threadIds[i], NULL, process_per_thread, &res_copy[i]);
 	}
-	while(round<num_rounds){
+	while(round<num_rounds+warmups){
 	    for (int i = 0; i< DATA_SIZE; i++)
 	        res.buf[i] = 'a'+i%10;
 	    gettimeofday(&cur_time, NULL);
@@ -267,9 +269,13 @@ int main(int argc, char *argv[])
 	    start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
 	    gettimeofday(&cur_time, NULL);
 	    diff_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000) - start_time_msec;
+	    if (round>=warmups){
+	        avg_time_msec += diff_time_msec;
+	    }
 	    fprintf(stdout, "data size: %d Bytes; time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE ,diff_time_msec,(DATA_SIZE)*8.0/1000000/diff_time_msec);
 	    round++;
 	}
+	fprintf(stdout, "data size: %d Bytes; average time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE ,avg_time_msec,(DATA_SIZE)*8.0/1000000/((float)avg_time_msec/num_rounds));
 	shutdown_flag = true;
 	wait();
 	for (int i=0; i<NUM_THREADS; i++)
