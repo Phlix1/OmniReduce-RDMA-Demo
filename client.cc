@@ -34,7 +34,10 @@ void handle_recv(struct resources *res, int slots)
 			uint32_t imm_data = wc[i].imm_data;
 #ifdef DEBUG
 			fprintf(stdout, "threadId: %d; next index: %d\n", res->threadId, imm_data);
-			fprintf(stdout, "receiving :%c, %c, %c, %c, %c, %c, %c, %c, %c, %c\n", res->buf[0], res->buf[1], res->buf[2], res->buf[3], res->buf[4], res->buf[5], res->buf[6], res->buf[7], res->buf[8], res->buf[9]);
+			std::cout<<"receiving: ";
+                        for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
+			    std::cout<<res->buf[k+start_offset]<<", ";
+			std::cout<<std::endl;
 #endif
 			if (imm_data<max_index[0])
 			{
@@ -46,7 +49,10 @@ void handle_recv(struct resources *res, int slots)
 			    else
 			        next_offset = imm_data+MESSAGE_SIZE*NUM_SLOTS;
 #ifdef DEBUG
-                            fprintf(stdout, "sending :%c, %c, %c, %c, %c, %c, %c, %c, %c, %c\n", res->buf[0], res->buf[1], res->buf[2], res->buf[3], res->buf[4], res->buf[5], res->buf[6], res->buf[7], res->buf[8], res->buf[9]);
+			    std::cout<<"sending: ";
+			    for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
+			        std::cout<<res->buf[k+start_offset]<<", ";
+			    std::cout<<std::endl;
 #endif
 	                    ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, imm_data, next_offset, slot+NUM_SLOTS*res->threadId);
 			    if (ret)
@@ -103,11 +109,13 @@ void *process_per_thread(void *arg)
             {
 	        fprintf(stderr, "failed to post SR\n");
 	        exit(1);
+		return NULL;
             }
         }
         handle_recv(res, first_burst);
 	wait();
     }
+    return NULL;
 }
 /*****************************************************************************
 * Function: main
@@ -143,18 +151,6 @@ int main(int argc, char *argv[])
 		long_options_tmp[5].name="desired-rate";long_options_tmp[5].has_arg=1;long_options_tmp[5].val='r';
 		long_options_tmp[6].name="help";long_options_tmp[6].has_arg=0;long_options_tmp[6].val='\0';
 		long_options_tmp[7].name="NULL";long_options_tmp[7].has_arg=0;long_options_tmp[7].val='\0';
-		/*
-		static struct option long_options[] = {
-			{.name = "port", .has_arg = 1, .val = 'p'},
-			{.name = "ib-dev", .has_arg = 1, .val = 'd'},
-			{.name = "ib-port", .has_arg = 1, .val = 'i'},
-			{.name = "gid-idx", .has_arg = 1, .val = 'g'},
-			{.name = "service-level", .has_arg = 1, .val = 's'},
-			{.name = "desired-rate", .has_arg = 1, .val = 'r'},
-			{.name = "help", .has_arg = 0, .val = '\0'},
-			{.name = NULL, .has_arg = 0, .val = '\0'}
-		
-                };*/
 		c = getopt_long(argc, argv, "p:d:i:g:s:r:h:", long_options_tmp, NULL);
 		if (c == -1)
 			break;
@@ -243,7 +239,7 @@ int main(int argc, char *argv[])
 	}
 	printf("Connected.\n");
 	// begin to send data 
-	int warmups = 10;
+	int warmups = 0;
 	int num_rounds = 10;
         int round = 0;
 	struct timeval cur_time;
@@ -259,11 +255,8 @@ int main(int argc, char *argv[])
 	}
 	while(round<num_rounds+warmups){
 	    for (int i = 0; i< DATA_SIZE; i++)
-	        res.buf[i] = 'a'+i%10;
+	        res.buf[i] = i%100*0.01;
 	    gettimeofday(&cur_time, NULL);
-	    //process_per_thread(&res);
-	    //pthread_create(&threadId, NULL, process_per_thread, &res);
-	    //pthread_join(threadId, NULL);
 	    wait();
 	    wait();
 	    start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
@@ -272,10 +265,10 @@ int main(int argc, char *argv[])
 	    if (round>=warmups){
 	        avg_time_msec += diff_time_msec;
 	    }
-	    fprintf(stdout, "data size: %d Bytes; time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE ,diff_time_msec,(DATA_SIZE)*8.0/1000000/diff_time_msec);
+	    fprintf(stdout, "data size: %ld Bytes; time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_msec,(DATA_SIZE)*sizeof(DATA_TYPE)*8.0/1000000/diff_time_msec);
 	    round++;
 	}
-	fprintf(stdout, "data size: %d Bytes; average time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE ,avg_time_msec,(DATA_SIZE)*8.0/1000000/((float)avg_time_msec/num_rounds));
+	fprintf(stdout, "data size: %ld Bytes; average time: %ld ms; thoughput: %f Gbps\n", DATA_SIZE*sizeof(DATA_TYPE) ,avg_time_msec/num_rounds,(DATA_SIZE)*sizeof(DATA_TYPE)*8.0/1000000/((float)avg_time_msec/num_rounds));
 	shutdown_flag = true;
 	wait();
 	for (int i=0; i<NUM_THREADS; i++)

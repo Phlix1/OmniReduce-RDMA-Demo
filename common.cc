@@ -182,7 +182,7 @@ void *poll_cq(struct resources *res)
 					res->buf[imm_data] = '\0';
 					recv_cnt += imm_data;
 #ifdef DEBUG
-					fprintf(stdout, "IBV_WC_RECV_RDMA_WITH_IMM : %d, %u, %s\n", ne, imm_data, res->buf);
+					fprintf(stdout, "IBV_WC_RECV_RDMA_WITH_IMM : %d, %u\n", ne, imm_data);
 #endif
 					if (imm_data == 0)
 					{
@@ -208,7 +208,7 @@ void *poll_cq(struct resources *res)
 				}
 				else if (wc[i].opcode == IBV_WC_RECV) {
 #ifdef DEBUG
-					fprintf(stdout, "IBV_WC_RECV : %s\n", res->buf);
+					fprintf(stdout, "IBV_WC_RECV\n");
 #endif
 					post_receive(res); // put back a recv wr
 				}
@@ -250,10 +250,10 @@ int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	char *tmp = res->buf+offset;
+	DATA_TYPE *tmp = res->buf+offset;
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
-	sge.length = len;
+	sge.length = len*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the send work request */
 	memset(&sr, 0, sizeof(sr));
@@ -272,7 +272,7 @@ int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_
 	{
 		sr.imm_data = len;
 #ifdef DEBUG
-		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u, %s\n", len, res->buf);
+		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u\n", len);
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
@@ -312,10 +312,10 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	char *tmp = res->buf+offset;
+	DATA_TYPE *tmp = res->buf+offset;
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
-	sge.length = len;
+	sge.length = len*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the send work request */
 	memset(&sr, 0, sizeof(sr));
@@ -327,7 +327,7 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	sr.send_flags = IBV_SEND_SIGNALED;
 	if (opcode != IBV_WR_SEND)
 	{
-		sr.wr.rdma.remote_addr = res->remote_props.addr+MESSAGE_SIZE*slot;
+		sr.wr.rdma.remote_addr = res->remote_props.addr+MESSAGE_SIZE*slot*sizeof(DATA_TYPE);
 		sr.wr.rdma.rkey = res->remote_props.rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
@@ -374,10 +374,10 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	char *tmp = res->buf+slot*MESSAGE_SIZE;
+	DATA_TYPE *tmp = res->buf+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+slot*MESSAGE_SIZE;
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
-	sge.length = len;
+	sge.length = len*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the send work request */
 	memset(&sr, 0, sizeof(sr));
@@ -389,14 +389,14 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	sr.send_flags = IBV_SEND_SIGNALED;
 	if (opcode != IBV_WR_SEND)
 	{
-		sr.wr.rdma.remote_addr = res->remote_props.addr+offset;
+		sr.wr.rdma.remote_addr = res->remote_props.addr+offset*sizeof(DATA_TYPE);
 		sr.wr.rdma.rkey = res->remote_props.rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
 	{
 		sr.imm_data = imm;
 #ifdef DEBUG
-		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u, %s\n", imm, res->buf);
+		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u\n", imm);
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
@@ -480,8 +480,8 @@ int post_receive_server(struct resources *res, uint32_t offset, int slot)
 
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	sge.addr = (uintptr_t)res->buf+slot*MESSAGE_SIZE;
-	sge.length = MESSAGE_SIZE;
+	sge.addr = (uintptr_t)(res->buf+slot*MESSAGE_SIZE);
+	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
 	memset(&rr, 0, sizeof(rr));
@@ -508,10 +508,10 @@ int post_receive_client(struct resources *res, uint32_t offset, int slot)
 
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	char*tmp = res->buf + offset;
+	DATA_TYPE*tmp = res->buf + offset*sizeof(DATA_TYPE);
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
-	sge.length = MESSAGE_SIZE;
+	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
 	memset(&rr, 0, sizeof(rr));
@@ -579,6 +579,7 @@ int resources_create(struct resources *res, struct config_t config)
 	int cq_size = 0;
 	int num_devices;
 	int rc = 0;
+	int cycle_buffer = sysconf(_SC_PAGESIZE);
 	/* if client side */
 	if (config.server_name)
 	{
@@ -691,18 +692,20 @@ int resources_create(struct resources *res, struct config_t config)
 	if (config.server_name)
 	    size = DATA_SIZE;
 	else
-	    size = NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS;
-	res->buf = (char *)malloc(size);
-	if (!res->buf)
+	    size = NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS;
+	
+	rc = posix_memalign(reinterpret_cast<void**>(&res->buf), cycle_buffer, size*sizeof(DATA_TYPE));
+	//res->buf = (DATA_TYPE *)malloc(size*sizeof(DATA_TYPE));
+	if (rc!=0)
 	{
 		fprintf(stderr, "failed to malloc %Zu bytes to memory buffer\n", size);
 		rc = 1;
 		goto resources_create_exit;
 	}
-	memset(res->buf, 0, size);
+	memset(res->buf, 0, size*sizeof(DATA_TYPE));
 	/* register the memory buffer */
 	mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
-	res->mr = ibv_reg_mr(res->pd, res->buf, size, mr_flags);
+	res->mr = ibv_reg_mr(res->pd, res->buf, size*sizeof(DATA_TYPE), mr_flags);
 	if (!res->mr)
 	{
 		fprintf(stderr, "ibv_reg_mr failed with mr_flags=0x%x\n", mr_flags);

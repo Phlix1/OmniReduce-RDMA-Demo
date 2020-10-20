@@ -23,17 +23,18 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+#define DATA_TYPE float
 #define MAX_CONCURRENT_WRITES 1024
 #define QUEUE_DEPTH_DEFAULT 1024
 #define MSG "SEND operation "
 #define RDMAMSGR "RDMA read operation "
 #define RDMAMSGW "RDMA write operation"
 #define MSG_SIZE 50*1024*1024
-#define MESSAGE_SIZE (1024)
+#define MESSAGE_SIZE (256)
 #define NUM_SLOTS 64
 #define NUM_QPS 1
 #define NUM_THREADS 8
-#define DATA_SIZE_PER_THREAD (16*1024*1024)
+#define DATA_SIZE_PER_THREAD (4*1024*1024)
 #define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 static inline uint64_t htonll(uint64_t x) { return bswap_64(x); }
@@ -80,7 +81,7 @@ struct resources
 	struct ibv_cq *cq[NUM_THREADS];				   /* CQ handle */
 	struct ibv_qp *qp[NUM_QPS*NUM_THREADS];				   /* QP handle */
 	struct ibv_mr *mr;				   /* MR handle for buf */
-	char *buf;						   /* memory buffer pointer, used for RDMA and send ops */
+	DATA_TYPE *buf;			    /* memory buffer pointer, used for RDMA and send ops */
 	int sock;						   /* TCP socket file descriptor */
 	pthread_t cq_poller_thread;        /* thread to poll completion queue */
 };

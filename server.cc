@@ -32,13 +32,23 @@ void handle_recv(struct resources *res)
 			int ret = 0;
 			int slot = 0;
 			slot = (next_offset/MESSAGE_SIZE)%NUM_SLOTS;
+			int global_slot = slot+NUM_SLOTS*res->threadId;
 #ifdef DEBUG
 			fprintf(stdout, "%d %d\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS);
 			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
-			fprintf(stdout, "after receiving :%c, %c, %c, %c, %c, %c, %c, %c, %c, %c\n", res->buf[0], res->buf[1], res->buf[2], res->buf[3], res->buf[4], res->buf[5], res->buf[6], res->buf[7], res->buf[8], res->buf[9]);
+			std::cout<<"after receiving: ";
+			for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
+			    std::cout<<res->buf[k]<<",";
+			}
+
+			std::cout<<std::endl;
 #endif
-			post_receive_server(res, current_offset[slot], slot+NUM_SLOTS*res->threadId);
-			ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, slot+NUM_SLOTS*res->threadId);
+
+			for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
+			    res->buf[NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = res->buf[k];
+			}
+			post_receive_server(res, current_offset[slot], global_slot);
+			ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, global_slot);
 			if(ret)
 			{
 			    fprintf(stderr, "failed to post SR\n");
@@ -57,6 +67,7 @@ void *process_per_thread(void *arg)
 {
     struct resources *res = (struct resources *)arg;
     handle_recv(res);
+    return NULL;
 }
 /*****************************************************************************
 * Function: main
@@ -91,17 +102,6 @@ int main(int argc, char *argv[])
 		long_options_tmp[5].name="desired-rate";long_options_tmp[5].has_arg=1;long_options_tmp[5].val='r';
 		long_options_tmp[6].name="help";long_options_tmp[6].has_arg=0;long_options_tmp[6].val='\0';
 		long_options_tmp[7].name="NULL";long_options_tmp[7].has_arg=0;long_options_tmp[7].val='\0';
-		/*
-		static struct option long_options[] = {
-			{.name = "port", .has_arg = 1, .val = 'p'},
-			{.name = "ib-dev", .has_arg = 1, .val = 'd'},
-			{.name = "ib-port", .has_arg = 1, .val = 'i'},
-			{.name = "gid-idx", .has_arg = 1, .val = 'g'},
-			{.name = "service-level", .has_arg = 1, .val = 's'},
-			{.name = "help", .has_arg = 0, .val = 'h'},
-			{.name = NULL, .has_arg = 0, .val = '\0'}
-                };
-		*/
 		c = getopt_long(argc, argv, "p:d:i:g:s:h:", long_options_tmp, NULL);
 		if (c == -1)
 			break;
@@ -177,7 +177,6 @@ int main(int argc, char *argv[])
 	        return rc;
 	}
 	printf("Connected.\n");
-        //handle_recv(&res);
 	
 	pthread_t threadIds[NUM_THREADS];
 	struct resources res_copy[NUM_THREADS];
