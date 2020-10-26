@@ -3,6 +3,8 @@
 struct config_t server_config = {
 	NULL,  /* dev_name */
 	NULL,  /* server_name */
+	0,     /* number of servers or clients*/
+	{NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 	19875, /* tcp_port */
 	1,	 /* ib_port */
 	-1, /* gid_idx */
@@ -14,10 +16,25 @@ void handle_recv(struct resources *res)
     uint32_t max_index = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE;
     uint32_t next_offset = 0;
     struct ibv_wc wc[MAX_CONCURRENT_WRITES * 2];
-    uint32_t current_offset[NUM_SLOTS*NUM_THREADS];
-    for(int i=0; i<NUM_SLOTS; i++){
-        current_offset[i] = start_offset+i*MESSAGE_SIZE;
-        post_receive_server(res, current_offset[i], i+NUM_SLOTS*res->threadId);
+    uint32_t current_offset[NUM_SLOTS];
+    int register_count[NUM_SLOTS];
+    uint32_t slot_to_qps[NUM_SLOTS][res->num_socks];
+    int count[NUM_SLOTS];
+    int set[NUM_SLOTS];
+    for (int i=0; i<NUM_SLOTS; i++) {
+	register_count[i] = 0;
+	count[i] = res->num_socks;
+	set[NUM_SLOTS] = 0;
+    }
+    for(int w=0; w<res->num_socks; w++)
+    {
+        for(int i=0; i<NUM_SLOTS; i++){
+	    current_offset[i] = start_offset+i*MESSAGE_SIZE;
+        }
+    }
+    int first_burst = NUM_SLOTS*res->num_socks/res->num_machines;
+    for(int i=0; i<first_burst; i++) {
+        post_receive_server(res, i%(NUM_QPS*res->num_socks)+NUM_QPS*res->num_socks*res->threadId, 0);
     }
     while (1) {
         int ne = ibv_poll_cq(res->cq[res->threadId], MAX_CONCURRENT_WRITES * 2, (struct ibv_wc*)wc);
@@ -32,32 +49,64 @@ void handle_recv(struct resources *res)
 			int ret = 0;
 			int slot = 0;
 			slot = (next_offset/MESSAGE_SIZE)%NUM_SLOTS;
-			int global_slot = slot+NUM_SLOTS*res->threadId;
+			if(register_count[slot]<res->num_socks){
+			    slot_to_qps[slot][register_count[slot]] = wc[i].qp_num;
 #ifdef DEBUG
-			fprintf(stdout, "%d %d\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS);
-			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
-			std::cout<<"after receiving: ";
-			for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
-			    std::cout<<res->buf[k]<<",";
-			}
-
-			std::cout<<std::endl;
+			    fprintf(stdout, "QP : %u is registered in Slot %d\n", wc[i].qp_num, slot);
 #endif
-
-			for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
-			    res->buf[NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = res->buf[k];
+			    register_count[slot]++;
 			}
-			post_receive_server(res, current_offset[slot], global_slot);
-			ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, global_slot);
-			if(ret)
-			{
-			    fprintf(stderr, "failed to post SR\n");
-		            exit(1);
+			int global_slot = slot+NUM_SLOTS*res->threadId;
+			int wid = get_workerid_by_qp_num(wc[i].qp_num);
+                        if (count[slot]==res->num_socks){
+			    for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
+			        res->buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = res->buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
+			    }
 			}
-			if (next_offset<max_index)
-			    current_offset[slot] = next_offset;
-			else
-			    current_offset[slot] = start_offset+slot*MESSAGE_SIZE;
+			else {
+			    for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
+			        res->buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] += res->buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
+			    }
+			}
+			count[slot]--;
+#ifdef DEBUG
+			fprintf(stdout, "next block: %d; slot: %d; qp_num:%u\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS, wc[i].qp_num);
+			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[wid][slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
+			std::cout<<"after receiving from "<<wid<<std::endl;
+                        std::cout<<"##### aggregator state #####\n";
+			for(int w=0; w<res->num_socks; w++){
+			    std::cout<<"worker "<<w<<std::endl;
+		 	    for(int k=0; k<MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS; k++){
+			        std::cout<<res->buf[w*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k]<<",";
+			    }
+			    std::cout<<std::endl;
+			}
+			for(int s=0; s<2; s++){
+			    std::cout<<"set "<<s<<std::endl;
+		 	    for(int k=0; k<MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS; k++){
+			        std::cout<<res->buf[(s+res->num_socks)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k]<<",";
+			    }
+			    std::cout<<std::endl;
+			}
+			std::cout<<"##########\n";
+#endif
+			if(count[slot]==0){
+			    for(int k=0; k<res->num_socks; k++){
+			        post_receive_server(res, global_slot, slot_to_qps[slot][k]);
+			        ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, global_slot, slot_to_qps[slot][k], set[slot]);
+			        if(ret)
+			        {
+			            fprintf(stderr, "failed to post SR\n");
+		                    exit(1);
+			        }
+			    }
+			    if (next_offset<max_index)
+			        current_offset[slot] = next_offset;
+			    else
+			        current_offset[slot] = start_offset+slot*MESSAGE_SIZE;
+			    count[slot] = res->num_socks;
+			    set[slot] = (set[slot]+1)%2;
+			}
 		    }												                        }
 	    }
 	}
@@ -142,9 +191,21 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
+	server_config.isServer = true;
 	/* parse the last parameter (if exists) as the server name */
 	if (optind == argc - 1)
 		server_config.server_name = argv[optind];
+	char *token;
+	const char s[2] = ",";
+	token = strtok(server_config.server_name, s);
+	while( token != NULL ) {
+	    server_config.peer_names[server_config.num_peers] = token;
+	    server_config.num_peers++;
+	    //printf( " %s\n", token );	     
+	    token = strtok(NULL, s);
+	}
+	/* print the used parameters for info*/
+	print_config(server_config);
 	/* init all of the resources, so cleanup will be easy */
 	resources_init(&res);
 	/* create resources before using them */
@@ -176,6 +237,7 @@ int main(int argc, char *argv[])
 	        fprintf(stdout, "\ntest result is %d\n", rc);
 	        return rc;
 	}
+        std::cout<<"Number of aggregators: "<<res.num_machines<<"; Number of workers is "<<res.num_socks<<"; My ID is "<<res.myId<<std::endl;
 	printf("Connected.\n");
 	
 	pthread_t threadIds[NUM_THREADS];

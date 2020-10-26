@@ -18,54 +18,98 @@
 * indicated port for an incoming connection.
 *
 ******************************************************************************/
-int sock_connect(const char *servername, int port)
+std::unordered_map<uint32_t, uint32_t> qp_num_revert {};
+std::unordered_map<uint32_t, uint32_t> qp_num_to_peerid {};
+int get_workerid_by_qp_num(uint32_t qp_num)
+{
+    return qp_num_to_peerid[qp_num];
+}
+int sock_connect(struct resources *res, struct config_t config)
 {
 	struct addrinfo *resolved_addr = NULL;
 	struct addrinfo *iterator;
 	char service[6];
 	int sockfd = -1;
 	int listenfd = 0;
+	int c;
+	struct sockaddr_in client;
+	char ipAddr[INET_ADDRSTRLEN];
 	int tmp;
+	int serverid = 0;
 	struct addrinfo hints =
 		{
 			.ai_flags = AI_PASSIVE,
 			.ai_family = AF_INET,
 			.ai_socktype = SOCK_STREAM};
-	if (sprintf(service, "%d", port) < 0)
+	if (sprintf(service, "%d", config.tcp_port) < 0)
 		goto sock_connect_exit;
-	/* Resolve DNS address, use sockfd as temp storage */
-	sockfd = getaddrinfo(servername, service, &hints, &resolved_addr);
-	if (sockfd < 0)
+	if (!config.isServer)
 	{
-		fprintf(stderr, "%s for %s:%d\n", gai_strerror(sockfd), servername, port);
-		goto sock_connect_exit;
+	    for (int i=0; i<config.num_peers; i++)
+	    {
+		serverid = i;
+	        /* Resolve DNS address, use sockfd as temp storage */
+	        sockfd = getaddrinfo(config.peer_names[i], service, &hints, &resolved_addr);
+	        if (sockfd < 0)
+	        {
+		    fprintf(stderr, "%s for %s:%d\n", gai_strerror(sockfd), config.peer_names[i], config.tcp_port);
+		    goto sock_connect_exit;
+	        }
+	        /* Search through results and find the one we want */
+	        for (iterator = resolved_addr; iterator; iterator = iterator->ai_next)
+	        {
+		    sockfd = socket(iterator->ai_family, iterator->ai_socktype, iterator->ai_protocol);
+		    if (sockfd >= 0)
+		    {
+			/* Client mode. Initiate connection to remote */
+			if ((tmp = connect(sockfd, iterator->ai_addr, iterator->ai_addrlen)))
+			{
+				fprintf(stdout, "failed connect \n");
+				close(sockfd);
+				sockfd = -1;
+			}
+		    }
+	        }
+	        res->socks[i] = sockfd;
+	    }
 	}
-	/* Search through results and find the one we want */
-	for (iterator = resolved_addr; iterator; iterator = iterator->ai_next)
+	else
 	{
+	    /* Resolve DNS address, use sockfd as temp storage */
+	    sockfd = getaddrinfo(NULL, service, &hints, &resolved_addr);
+	    if (sockfd < 0)
+	    {
+		fprintf(stderr, "%s for NULL:%d\n", gai_strerror(sockfd), config.tcp_port);
+		goto sock_connect_exit;
+	    }
+	    /* Search through results and find the one we want */
+	    for (iterator = resolved_addr; iterator; iterator = iterator->ai_next)
+	    {
 		sockfd = socket(iterator->ai_family, iterator->ai_socktype, iterator->ai_protocol);
 		if (sockfd >= 0)
 		{
-			if (servername){
-				/* Client mode. Initiate connection to remote */
-				if ((tmp = connect(sockfd, iterator->ai_addr, iterator->ai_addrlen)))
-				{
-					fprintf(stdout, "failed connect \n");
-					close(sockfd);
-					sockfd = -1;
+			/* Server mode. Set up listening socket an accept a connection */
+			listenfd = sockfd;
+			sockfd = -1;
+			if (bind(listenfd, iterator->ai_addr, iterator->ai_addrlen))
+				goto sock_connect_exit;
+			listen(listenfd, 1);
+			//sockfd = accept(listenfd, NULL, 0);
+			c = sizeof(struct sockaddr_in);
+			int connect_num = 0;
+			while (connect_num<config.num_peers) {
+				sockfd = accept(listenfd, (struct sockaddr *)&client, (socklen_t*)&c);
+				for(int i=0; i<config.num_peers; i++){
+					const char* temp = inet_ntop(AF_INET, &client.sin_addr, ipAddr, sizeof(ipAddr));
+					if (strcmp(config.peer_names[i], temp)==0){
+					    printf("connected peer address = %s; index = %d\n", temp, i);
+					    res->socks[i] = sockfd;
+					}
 				}
-            }
-			else
-			{
-					/* Server mode. Set up listening socket an accept a connection */
-					listenfd = sockfd;
-					sockfd = -1;
-					if (bind(listenfd, iterator->ai_addr, iterator->ai_addrlen))
-						goto sock_connect_exit;
-					listen(listenfd, 1);
-					sockfd = accept(listenfd, NULL, 0);
+				connect_num++;
 			}
 		}
+	    }
 	}
 sock_connect_exit:
 	if (listenfd)
@@ -74,8 +118,8 @@ sock_connect_exit:
 		freeaddrinfo(resolved_addr);
 	if (sockfd < 0)
 	{
-		if (servername)
-			fprintf(stderr, "Couldn't connect to %s:%d\n", servername, port);
+		if (!config.isServer)
+			fprintf(stderr, "Couldn't connect to %s:%d\n", config.peer_names[serverid], config.tcp_port);
 		else
 		{
 			perror("server accept");
@@ -304,11 +348,29 @@ int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_
 #endif
 	return rc;
 }
-int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot)
+int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num)
 {
 	struct ibv_send_wr sr;
 	struct ibv_sge sge;
 	struct ibv_send_wr *bad_wr = NULL;
+	int qid;
+	int mid;
+	if(qp_num==0){
+	    qid = (slot/NUM_SLOTS)*NUM_QPS*res->num_socks+slot%(NUM_QPS*res->num_socks);
+	    mid = qp_num_to_peerid[res->qp[qid]->qp_num];
+	}
+	else {
+	    qid = qp_num_revert[qp_num];
+	    mid = qp_num_to_peerid[qp_num];
+	}
+#ifdef DEBUG
+	//std::cout<<"qp num dict: "<<std::endl;
+	//for ( auto it = qp_num_revert.begin(); it != qp_num_revert.end(); ++it )
+        //    std::cout << " " << it->first << ":" << it->second;
+	//std::cout<<std::endl;
+	std::cout<<"send data with QP "<<qid<<"; QP num: ";
+	printf("0x%x\n", res->qp[qid]->qp_num);
+#endif
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
@@ -327,8 +389,10 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	sr.send_flags = IBV_SEND_SIGNALED;
 	if (opcode != IBV_WR_SEND)
 	{
-		sr.wr.rdma.remote_addr = res->remote_props.addr+MESSAGE_SIZE*slot*sizeof(DATA_TYPE);
-		sr.wr.rdma.rkey = res->remote_props.rkey;
+		//sr.wr.rdma.remote_addr = res->remote_props.addr+MESSAGE_SIZE*slot*sizeof(DATA_TYPE);
+		//sr.wr.rdma.rkey = res->remote_props.rkey;
+		sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+MESSAGE_SIZE*slot*sizeof(DATA_TYPE)+MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS*res->myId*sizeof(DATA_TYPE);
+		sr.wr.rdma.rkey = res->remote_props_array[mid].rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
 	{
@@ -338,7 +402,7 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[qid], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -366,15 +430,33 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 #endif
 	return rc;
 }
-int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot)
+int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num, int set)
 {
+#ifdef DEBUG
+	//std::cout<<"qp num dict: "<<std::endl;
+	//for ( auto it = qp_num_revert.begin(); it != qp_num_revert.end(); ++it )
+        //    std::cout << " " << it->first << ":" << it->second;
+	//std::cout<<std::endl;
+	std::cout<<"send data with QP "<<qp_num_revert[qp_num]<<"; QP num: ";
+	printf("0x%x\n", qp_num);
+#endif
 	struct ibv_send_wr sr;
 	struct ibv_sge sge;
 	struct ibv_send_wr *bad_wr = NULL;
+	int qid;
+	int mid;
+	if(qp_num==0){
+	    qid = (slot/NUM_SLOTS)*NUM_QPS*res->num_socks+slot%(NUM_QPS*res->num_socks);
+	    mid = qp_num_to_peerid[res->qp[qid]->qp_num];
+	}
+	else {
+	    qid = qp_num_revert[qp_num];
+	    mid = qp_num_to_peerid[qp_num];
+	}
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	DATA_TYPE *tmp = res->buf+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+slot*MESSAGE_SIZE;
+	DATA_TYPE *tmp = res->buf+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*(res->num_socks+set)+slot*MESSAGE_SIZE;
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
 	sge.length = len*sizeof(DATA_TYPE);
@@ -389,8 +471,10 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	sr.send_flags = IBV_SEND_SIGNALED;
 	if (opcode != IBV_WR_SEND)
 	{
-		sr.wr.rdma.remote_addr = res->remote_props.addr+offset*sizeof(DATA_TYPE);
-		sr.wr.rdma.rkey = res->remote_props.rkey;
+		//sr.wr.rdma.remote_addr = res->remote_props.addr+offset*sizeof(DATA_TYPE);
+		//sr.wr.rdma.rkey = res->remote_props.rkey;
+                sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+offset*sizeof(DATA_TYPE);
+                sr.wr.rdma.rkey = res->remote_props_array[mid].rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
 	{
@@ -400,7 +484,7 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
-	rc = ibv_post_send(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &sr, &bad_wr);
+	rc = ibv_post_send(res->qp[qid], &sr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post SR %d\n", rc);
 #ifdef DEBUG
@@ -471,7 +555,7 @@ int post_receive(struct resources *res)
 #endif
 	return rc;
 }
-int post_receive_server(struct resources *res, uint32_t offset, int slot)
+int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num)
 {
 	struct ibv_recv_wr rr;
 	struct ibv_sge sge;
@@ -480,7 +564,8 @@ int post_receive_server(struct resources *res, uint32_t offset, int slot)
 
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	sge.addr = (uintptr_t)(res->buf+slot*MESSAGE_SIZE);
+	//sge.addr = (uintptr_t)(res->buf+slot*MESSAGE_SIZE);
+	sge.addr = (uintptr_t)(res->buf);
 	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
@@ -490,7 +575,20 @@ int post_receive_server(struct resources *res, uint32_t offset, int slot)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &rr, &bad_wr);
+	//rc = ibv_post_recv(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &rr, &bad_wr);
+	if (qp_num==0){
+	    rc = ibv_post_recv(res->qp[qp_id], &rr, &bad_wr);
+#ifdef DEBUG
+	    std::cout<<"receive was post in QP "<<qp_id<<std::endl;
+#endif
+	}
+	else
+	{
+	    rc = ibv_post_recv(res->qp[qp_num_revert[qp_num]], &rr, &bad_wr);
+#ifdef DEBUG
+	    std::cout<<"receive was post in QP "<<qp_num_revert[qp_num]<<std::endl;
+#endif
+	}
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -499,18 +597,24 @@ int post_receive_server(struct resources *res, uint32_t offset, int slot)
 #endif
 	return rc;
 }
-int post_receive_client(struct resources *res, uint32_t offset, int slot)
+int post_receive_client(struct resources *res, uint32_t offset, int slot, uint32_t qp_num)
 {
 	struct ibv_recv_wr rr;
 	struct ibv_sge sge;
 	struct ibv_recv_wr *bad_wr;
 	int rc;
-
+	int qid;
+	if(qp_num==0){
+	    qid = (slot/NUM_SLOTS)*NUM_QPS*res->num_socks+slot%(NUM_QPS*res->num_socks);
+	}
+	else {
+	    qid = qp_num_revert[qp_num];
+	}
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	DATA_TYPE*tmp = res->buf + offset*sizeof(DATA_TYPE);
-	//sge.addr = (uintptr_t)res->buf;
-	sge.addr = (uintptr_t)tmp;
+	//DATA_TYPE*tmp = res->buf + offset*sizeof(DATA_TYPE);
+	sge.addr = (uintptr_t)res->buf;
+	//sge.addr = (uintptr_t)tmp;
 	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
@@ -520,7 +624,7 @@ int post_receive_client(struct resources *res, uint32_t offset, int slot)
 	rr.sg_list = &sge;
 	rr.num_sge = 1;
 	/* post the Receive Request to the RQ */
-	rc = ibv_post_recv(res->qp[(slot/NUM_SLOTS)*NUM_QPS+slot%NUM_QPS], &rr, &bad_wr);
+	rc = ibv_post_recv(res->qp[qid], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
@@ -547,7 +651,7 @@ int post_receive_client(struct resources *res, uint32_t offset, int slot)
 void resources_init(struct resources *res)
 {
 	memset(res, 0, sizeof *res);
-	res->sock = -1;
+	res->sock_status = -1;
 }
 /******************************************************************************
 * Function: resources_create
@@ -580,14 +684,19 @@ int resources_create(struct resources *res, struct config_t config)
 	int num_devices;
 	int rc = 0;
 	int cycle_buffer = sysconf(_SC_PAGESIZE);
+	res->num_socks = config.num_peers;
 	/* if client side */
-	if (config.server_name)
+	if (!config.isServer)
 	{
-		res->sock = sock_connect(config.server_name, config.tcp_port);
-		if (res->sock < 0)
+		res->sock_status = sock_connect(res, config);
+		std::cout<<"###socket number: "<<res->num_socks<<std::endl;
+		for (int t=0; t<res->num_socks; t++){
+			std::cout<<"socket "<<t<<" -> "<<res->socks[t]<<std::endl; 
+		}
+		if (res->sock_status < 0)
 		{
-			fprintf(stderr, "failed to establish TCP connection to server %s, port %d\n",
-					config.server_name, config.tcp_port);
+			fprintf(stderr, "failed to establish TCP connection to server, port %d\n",
+					config.tcp_port);
 			rc = -1;
 			goto resources_create_exit;
 		}
@@ -597,8 +706,12 @@ int resources_create(struct resources *res, struct config_t config)
 #ifdef DEBUG
 		fprintf(stdout, "waiting on port %d for TCP connection\n", config.tcp_port);
 #endif
-		res->sock = sock_connect(NULL, config.tcp_port);
-		if (res->sock < 0)
+		res->sock_status = sock_connect(res, config);
+		std::cout<<"###socket number: "<<res->num_socks<<std::endl;
+		for (int t=0; t<res->num_socks; t++){
+			std::cout<<"socket "<<t<<" -> "<<res->socks[t]<<std::endl; 
+		}
+		if (res->sock_status < 0)
 		{
 			fprintf(stderr, "failed to establish TCP connection with client on port %d\n",
 					config.tcp_port);
@@ -689,10 +802,10 @@ int resources_create(struct resources *res, struct config_t config)
 	    }
 	}
 	/* allocate the memory buffer that will hold the data */
-	if (config.server_name)
+	if (!config.isServer)
 	    size = DATA_SIZE;
 	else
-	    size = NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS;
+	    size = res->num_socks*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
 	
 	rc = posix_memalign(reinterpret_cast<void**>(&res->buf), cycle_buffer, size*sizeof(DATA_TYPE));
 	//res->buf = (DATA_TYPE *)malloc(size*sizeof(DATA_TYPE));
@@ -728,27 +841,29 @@ int resources_create(struct resources *res, struct config_t config)
 	    qp_init_attr[i].cap.max_recv_wr = QUEUE_DEPTH_DEFAULT;
 	    qp_init_attr[i].cap.max_send_sge = 1;
 	    qp_init_attr[i].cap.max_recv_sge = 1;
-	}	
+	}
+        res->qp = (struct ibv_qp **)malloc(res->num_socks*NUM_QPS*NUM_THREADS*sizeof(struct ibv_qp *));	
 	/* create the Queue Pair */
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	for(int i=0; i<res->num_socks*NUM_QPS*NUM_THREADS; i++)
 	{
-	    res->qp[i] = ibv_create_qp(res->pd, &qp_init_attr[i/NUM_QPS]);
+	    res->qp[i] = ibv_create_qp(res->pd, &qp_init_attr[i/(NUM_QPS*res->num_socks)]);
 	    if (!res->qp[i])
 	    {
 		fprintf(stderr, "failed to create QP\n");
 		rc = 1;
 		goto resources_create_exit;
 	    }
+	    qp_num_revert.insert(std::make_pair(res->qp[i]->qp_num, i));
 	}
 #ifdef DEBUG
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	for(int i=0; i<res->num_socks*NUM_QPS*NUM_THREADS; i++)
 	    fprintf(stdout, "QP was created, QP number=0x%x\n", res->qp[i]->qp_num);
 #endif
 resources_create_exit:
 	if (rc)
 	{
 		/* Error encountered, cleanup */
-	        for(int i=0; i<NUM_QPS*NUM_THREADS; i++){
+	        for(int i=0; i<res->num_socks*NUM_QPS*NUM_THREADS; i++){
 		    if (res->qp[i])
 		    {
 			ibv_destroy_qp(res->qp[i]);
@@ -787,11 +902,12 @@ resources_create_exit:
 			ibv_free_device_list(dev_list);
 			dev_list = NULL;
 		}
-		if (res->sock >= 0)
+		if (res->sock_status >= 0)
 		{
-			if (close(res->sock))
+			for (int i=0; i<res->num_socks; i++)
+			    if (close(res->socks[i]))
 				fprintf(stderr, "failed to close socket\n");
-			res->sock = -1;
+			res->sock_status = -1;
 		}
 	}
 
@@ -934,8 +1050,10 @@ int modify_qp_to_rts(struct ibv_qp *qp, struct config_t config)
 ******************************************************************************/
 int connect_qp(struct resources *res, struct config_t config)
 {
-	struct cm_con_data_t local_con_data;
-	struct cm_con_data_t remote_con_data;
+	//struct cm_con_data_t local_con_data;
+	struct cm_con_data_t local_con_datas[res->num_socks];
+	//struct cm_con_data_t remote_con_data;
+	struct cm_con_data_t remote_con_datas[res->num_socks];
 	struct cm_con_data_t tmp_con_data;
 	int rc = 0;
 	char temp_char;
@@ -950,46 +1068,106 @@ int connect_qp(struct resources *res, struct config_t config)
 		}
 	}
 	else
-		memset(&my_gid, 0, sizeof my_gid);
+	memset(&my_gid, 0, sizeof my_gid);
 	/* exchange using TCP sockets info required to connect QPs */
-	local_con_data.addr = htonll((uintptr_t)res->buf);
-	local_con_data.rkey = htonl(res->mr->rkey);
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
-	    local_con_data.qp_num[i] = htonl(res->qp[i]->qp_num);
-	local_con_data.lid = htons(res->port_attr.lid);
-	memcpy(local_con_data.gid, &my_gid, 16);
-#ifdef DEBUG
-	fprintf(stdout, "\nLocal LID = 0x%x\n", res->port_attr.lid);
-#endif
-	if (sock_sync_data(res->sock, sizeof(struct cm_con_data_t), (char *)&local_con_data, (char *)&tmp_con_data) < 0)
+	
+	//local_con_data.addr = htonll((uintptr_t)res->buf);
+	//local_con_data.rkey = htonl(res->mr->rkey);
+	//for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	//    local_con_data.qp_num[i] = htonl(res->qp[i]->qp_num);
+	//local_con_data.lid = htons(res->port_attr.lid);
+	//memcpy(local_con_data.gid, &my_gid, 16);
+	for (int i=0; i<res->num_socks; i++)
 	{
+	    local_con_datas[i].remoteId = i;
+	    local_con_datas[i].num_machines = res->num_socks;
+	    local_con_datas[i].addr = htonll((uintptr_t)res->buf);
+	    local_con_datas[i].rkey = htonl(res->mr->rkey);
+	    for(int j=0; j<res->num_socks*NUM_QPS*NUM_THREADS; j++)
+	        local_con_datas[i].qp_num[j] = htonl(res->qp[j]->qp_num);
+	    memcpy(local_con_datas[i].gid, &my_gid, 16);
+#ifdef DEBUG
+	    fprintf(stdout, "Local address = 0x%" PRIx64 "\n", local_con_datas[i].addr);
+	    fprintf(stdout, "Local rkey = 0x%x\n", local_con_datas[i].rkey);
+	    for(int j=0; j<res->num_socks*NUM_QPS*NUM_THREADS; j++){
+	        fprintf(stdout, "Local QP number = 0x%x\n", ntohl(local_con_datas[i].qp_num[j]));
+	    }
+	    fprintf(stdout, "Local LID = 0x%x\n", local_con_datas[i].lid);
+#endif
+	}
+	for (int i=0; i<res->num_socks; i++)
+	{
+	    if (sock_sync_data(res->socks[i], sizeof(struct cm_con_data_t), (char *)&local_con_datas[i], (char *)&tmp_con_data) < 0)
+	     {
 		fprintf(stderr, "failed to exchange connection data between sides\n");
 		rc = 1;
 		goto connect_qp_exit;
-	}
-	remote_con_data.addr = ntohll(tmp_con_data.addr);
-	remote_con_data.rkey = ntohl(tmp_con_data.rkey);
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
-	    remote_con_data.qp_num[i] = ntohl(tmp_con_data.qp_num[i]);
-	remote_con_data.lid = ntohs(tmp_con_data.lid);
-	memcpy(remote_con_data.gid, tmp_con_data.gid, 16);
-	/* save the remote side attributes, we will need it for the post SR */
-	res->remote_props = remote_con_data;
+	     }
+	    if (i==0)
+	    {
+	        res->myId = tmp_con_data.remoteId;
+		res->num_machines = tmp_con_data.num_machines;
+	    }
+	    else if(res->myId != tmp_con_data.remoteId || res->num_machines != tmp_con_data.num_machines)
+	    {
+	        fprintf(stderr, "machine ID or number error\n");
+		rc = 1;
+		goto connect_qp_exit;
+	    }
+	    remote_con_datas[i].remoteId = tmp_con_data.remoteId;
+	    remote_con_datas[i].num_machines = tmp_con_data.num_machines;
+	    remote_con_datas[i].addr = ntohll(tmp_con_data.addr);
+	    remote_con_datas[i].rkey = ntohl(tmp_con_data.rkey);
+	    for(int j=0; j<res->num_machines*NUM_QPS*NUM_THREADS; j++)
+	        remote_con_datas[i].qp_num[j] = ntohl(tmp_con_data.qp_num[j]);
+	    remote_con_datas[i].lid = ntohs(tmp_con_data.lid);
+	    memcpy(remote_con_datas[i].gid, tmp_con_data.gid, 16);
+	    res->remote_props_array[i] = remote_con_datas[i];
 #ifdef DEBUG
-	fprintf(stdout, "Remote address = 0x%" PRIx64 "\n", remote_con_data.addr);
-	fprintf(stdout, "Remote rkey = 0x%x\n", remote_con_data.rkey);
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
-	    fprintf(stdout, "Remote QP number = 0x%x\n", remote_con_data.qp_num[i]);
-	fprintf(stdout, "Remote LID = 0x%x\n", remote_con_data.lid);
-	if (config.gid_idx >= 0)
-	{
-		uint8_t *p = remote_con_data.gid;
+	    fprintf(stdout, "Remote address = 0x%" PRIx64 "\n", res->remote_props_array[i].addr);
+	    fprintf(stdout, "Remote rkey = 0x%x\n", res->remote_props_array[i].rkey);
+	    for(int j=0; j<res->num_machines*NUM_QPS*NUM_THREADS; j++){
+	        fprintf(stdout, "Remote QP number = 0x%x\n", res->remote_props_array[i].qp_num[j]);
+	    }
+	    fprintf(stdout, "Remote LID = 0x%x\n", res->remote_props_array[i].lid);
+	    if (config.gid_idx >= 0)
+	    {
+		uint8_t *p = res->remote_props_array[i].gid;
 		fprintf(stdout, "Remote GID =%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n ",p[0],
 				  p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
-	}
+	    }
 #endif
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	}
+	//remote_con_data.remoteId = tmp_con_data.remoteId;
+	//remote_con_data.num_machines = tmp_con_data.num_machines;
+	//remote_con_data.addr = ntohll(tmp_con_data.addr);
+	//remote_con_data.rkey = ntohl(tmp_con_data.rkey);
+	//for(int i=0; i<res->num_socks*NUM_QPS*NUM_THREADS; i++)
+	//    remote_con_data.qp_num[i] = ntohl(tmp_con_data.qp_num[i]);
+	//remote_con_data.lid = ntohs(tmp_con_data.lid);
+	//memcpy(remote_con_data.gid, tmp_con_data.gid, 16);
+	/* save the remote side attributes, we will need it for the post SR */
+	//res->remote_props = remote_con_data;
+
+	std::cout<<"##### connection info #####"<<std::endl;
+	for(int i=0; i<res->num_socks*NUM_QPS*NUM_THREADS; i++)
 	{
+	    int tid = i/(res->num_socks*NUM_QPS);
+	    int mid = (i%(res->num_socks*NUM_QPS))%res->num_socks;
+	    int qid = ((i%(res->num_socks*NUM_QPS))/res->num_socks)*res->num_machines+res->myId+tid*res->num_machines*NUM_QPS;
+            qp_num_to_peerid.insert(std::make_pair(res->qp[i]->qp_num, mid));
+//#ifdef DEBUG
+	    //std::cout<<"thread ID: "<<tid<<"; peer ID: "<<mid<<"; QP ID: "<<qid<<std::endl;
+	    if (config.isServer)
+	    {
+	        std::cout<<"Aggregator "<<res->myId<<": QP "<<i<<" <-----> "<<"Worker "<<mid<<": QP "<<qid<<std::endl;
+	    }
+	    else
+	    {
+	        std::cout<<"Worker "<<res->myId<<": QP "<<i<<" <-----> "<<"Aggregator "<<mid<<": QP "<<qid<<std::endl;
+	    }
+//#endif
+
 	    /* modify the QP to init */
             rc = modify_qp_to_init(res->qp[i], config);
 	    if (rc)
@@ -999,7 +1177,8 @@ int connect_qp(struct resources *res, struct config_t config)
 	    }
 	
 	    /* modify the QP to RTR */
-	    rc = modify_qp_to_rtr(res->qp[i], remote_con_data.qp_num[i], remote_con_data.lid, remote_con_data.gid, config);
+	    //rc = modify_qp_to_rtr(res->qp[i], remote_con_data.qp_num[i], remote_con_data.lid, remote_con_data.gid, config);
+	    rc = modify_qp_to_rtr(res->qp[i], res->remote_props_array[mid].qp_num[qid], res->remote_props_array[mid].lid, res->remote_props_array[mid].gid, config);
 	    if (rc)
 	    {
 		fprintf(stderr, "failed to modify QP state to RTR\n");
@@ -1012,14 +1191,19 @@ int connect_qp(struct resources *res, struct config_t config)
 		goto connect_qp_exit;
 	    }
 	}
+	std::cout<<"##########"<<std::endl;
 #ifdef DEBUG
 	fprintf(stdout, "QP state was change to RTS\n");
 #endif
-	/* sync to make sure that both sides are in states that they can connect to prevent packet loose */
-	if (sock_sync_data(res->sock, 1, (char *)"Q", &temp_char)) /* just send a dummy char back and forth */
+
+	for (int i=0; i<res->num_socks; i++)
 	{
+	    /* sync to make sure that both sides are in states that they can connect to prevent packet loose */
+	    if (sock_sync_data(res->socks[i], 1, (char *)"Q", &temp_char)) /* just send a dummy char back and forth */
+	    {
 		fprintf(stderr, "sync error after QPs are were moved to RTS\n");
 		rc = 1;
+	    }
 	}
 connect_qp_exit:
 	return rc;
@@ -1043,7 +1227,7 @@ int resources_destroy(struct resources *res)
 {
 	int rc = 0;
 
-	for(int i=0; i<NUM_QPS*NUM_THREADS; i++)
+	for(int i=0; i<res->num_socks*NUM_QPS*NUM_THREADS; i++)
 	{
 	    if (res->qp[i])
 		if (ibv_destroy_qp(res->qp[i]))
@@ -1080,12 +1264,13 @@ int resources_destroy(struct resources *res)
 			fprintf(stderr, "failed to close device context\n");
 			rc = 1;
 		}
-	if (res->sock >= 0)
-		if (close(res->sock))
-		{
+	if (res->sock_status >= 0)
+	{
+		for (int i=0; i<res->num_socks; i++)
+		    if (close(res->socks[i]))
 			fprintf(stderr, "failed to close socket\n");
-			rc = 1;
-		}
+		res->sock_status = -1;
+	}
 	return rc;
 }
 /******************************************************************************
@@ -1106,8 +1291,14 @@ int resources_destroy(struct resources *res)
 void print_config(struct config_t config)
 {
 	fprintf(stdout, " ------------------------------------------------\n");
-	if (config.server_name)
-		fprintf(stdout, " Server : %s\n", config.server_name);
+	if (!config.isServer){
+	    for(int i=0; i<config.num_peers; i++)
+		fprintf(stdout, " Server %d : %s\n", i, config.peer_names[i]);
+	}
+	else {
+	    for(int i=0; i<config.num_peers; i++)
+		fprintf(stdout, " Client %d : %s\n", i, config.peer_names[i]);
+	}
 	fprintf(stdout, " TCP port : %u\n", config.tcp_port);
 	fprintf(stdout, " Device name : \"%s\"\n", config.dev_name);
 	fprintf(stdout, " IB port : %u\n", config.ib_port);	

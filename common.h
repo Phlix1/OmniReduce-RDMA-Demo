@@ -2,6 +2,7 @@
 #define COMMON_H
 //#define DEBUG
 #include <iostream>
+#include <unordered_map>
 #include <mutex>
 #include <condition_variable>
 #include <stdio.h>
@@ -24,17 +25,14 @@
 #include <netdb.h>
 
 #define DATA_TYPE float
-#define MAX_CONCURRENT_WRITES 1024
-#define QUEUE_DEPTH_DEFAULT 1024
-#define MSG "SEND operation "
-#define RDMAMSGR "RDMA read operation "
-#define RDMAMSGW "RDMA write operation"
-#define MSG_SIZE 50*1024*1024
+#define MAX_CONCURRENT_WRITES 128
+#define QUEUE_DEPTH_DEFAULT 128
 #define MESSAGE_SIZE (256)
-#define NUM_SLOTS 64
+#define NUM_SLOTS 64 //K*NUM_QPS*num_aggregators
 #define NUM_QPS 1
 #define NUM_THREADS 8
-#define DATA_SIZE_PER_THREAD (4*1024*1024)
+#define DATA_SIZE_PER_THREAD (16*1024*1024)
+//#define DATA_SIZE_PER_THREAD (16)
 #define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 static inline uint64_t htonll(uint64_t x) { return bswap_64(x); }
@@ -50,18 +48,23 @@ static inline uint64_t ntohll(uint64_t x) { return x; }
 struct config_t
 {
 	const char *dev_name; /* IB device name */
-	char *server_name;	/* server host name */
+	char *server_name;	/* server host names */
+	int num_peers;           /* number of servers or clients  */
+	char* peer_names[10];   /* name of servers or clients*/
 	u_int32_t tcp_port;   /* server TCP port */
 	int ib_port;		  /* local IB port to work with */
 	int gid_idx;		  /* gid index to use */
 	int sl;               /* service level to use */
+	bool isServer;        /* server tag*/
 };
 /* structure to exchange data which is needed to connect the QPs */
 struct cm_con_data_t
 {
+	int remoteId;
+	int num_machines;
 	uint64_t addr;   /* Buffer address */
 	uint32_t rkey;   /* Remote key */
-	uint32_t qp_num[NUM_QPS*NUM_THREADS]; /* QP number */
+	uint32_t qp_num[10*NUM_QPS*NUM_THREADS]; /* QP number */
 	uint16_t lid;	/* LID of the IB port */
 	uint8_t gid[16]; /* gid */
 } __attribute__((packed));
@@ -69,33 +72,39 @@ struct cm_con_data_t
 /* structure of system resources */
 struct resources
 {
+	int myId;
 	int threadId;
 	struct ibv_device_attr
 		device_attr;
 	/* Device attributes */
 	struct ibv_port_attr port_attr;	/* IB port attributes */
 	struct cm_con_data_t remote_props; /* values to connect to remote side */
+	struct cm_con_data_t remote_props_array[10]; /* values to connect to remote side */
 	struct ibv_context *ib_ctx;		   /* device handle */
 	struct ibv_pd *pd;				   /* PD handle */
 	struct ibv_comp_channel* event_channel;	 /* Completion event channel, to wait for work completions */
 	struct ibv_cq *cq[NUM_THREADS];				   /* CQ handle */
-	struct ibv_qp *qp[NUM_QPS*NUM_THREADS];				   /* QP handle */
+	//struct ibv_qp *qp[NUM_QPS*NUM_THREADS];				   /* QP handle */
+	struct ibv_qp **qp;				   /* QP handle */
 	struct ibv_mr *mr;				   /* MR handle for buf */
 	DATA_TYPE *buf;			    /* memory buffer pointer, used for RDMA and send ops */
-	int sock;						   /* TCP socket file descriptor */
+	int sock_status;				           /* TCP socket status */
+	int num_socks;
+	int num_machines;
+	int socks[10];						   /* TCP sockets file descriptor */
 	pthread_t cq_poller_thread;        /* thread to poll completion queue */
 };
-
-int sock_connect(const char *servername, int port);
+int get_workerid_by_qp_num(uint32_t qp_num);
+int sock_connect(struct resources *res, struct config_t config);
 int sock_sync_data(int sock, int xfer_size, char *local_data, char *remote_data);
 void *poll_cq(struct resources *res);
 void poll_cq_main(struct resources *res);
 int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset);
-int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot);
-int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot);
+int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num, int set);
+int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num);
 int post_receive(struct resources *res);
-int post_receive_server(struct resources *res, uint32_t offset, int slot);
-int post_receive_client(struct resources *res, uint32_t offset, int slot);
+int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num);
+int post_receive_client(struct resources *res, uint32_t offset, int slot, uint32_t qp_num);
 void resources_init(struct resources *res);
 int resources_create(struct resources *res, struct config_t config);
 int modify_qp_to_init(struct ibv_qp *qp, struct config_t config);

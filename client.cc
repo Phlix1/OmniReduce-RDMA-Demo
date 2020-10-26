@@ -7,6 +7,8 @@ std::condition_variable condition_variable;
 struct config_t client_config = {
 	NULL,  /* dev_name */
 	NULL,  /* server_name */
+	0,     /* number of servers or clients*/
+	{NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 	19875, /* tcp_port */
 	1,	 /* ib_port */
 	-1, /* gid_idx */
@@ -33,7 +35,7 @@ void handle_recv(struct resources *res, int slots)
 		    if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
 			uint32_t imm_data = wc[i].imm_data;
 #ifdef DEBUG
-			fprintf(stdout, "threadId: %d; next index: %d\n", res->threadId, imm_data);
+			fprintf(stdout, "threadId: %d; next index: %d; qp_num:%u\n", res->threadId, imm_data, wc[i].qp_num);
 			std::cout<<"receiving: ";
                         for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
 			    std::cout<<res->buf[k+start_offset]<<", ";
@@ -43,7 +45,7 @@ void handle_recv(struct resources *res, int slots)
 			{
 			    int next_offset = 0;
 			    int slot = (imm_data/MESSAGE_SIZE)%NUM_SLOTS;
-			    post_receive_client(res, imm_data, slot+NUM_SLOTS*res->threadId);
+			    post_receive_client(res, imm_data, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
 			    if(imm_data+MESSAGE_SIZE*NUM_SLOTS-start_offset>=DATA_SIZE_PER_THREAD)
 				next_offset = max_index[slot];
 			    else
@@ -54,7 +56,7 @@ void handle_recv(struct resources *res, int slots)
 			        std::cout<<res->buf[k+start_offset]<<", ";
 			    std::cout<<std::endl;
 #endif
-	                    ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, imm_data, next_offset, slot+NUM_SLOTS*res->threadId);
+	                    ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, imm_data, next_offset, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
 			    if (ret)
 	                    {
 		                fprintf(stderr, "failed to post SR\n");
@@ -99,12 +101,12 @@ void *process_per_thread(void *arg)
 	    break;
 	}	
         for (int i=0; i<first_burst; i++){
-            post_receive_client(res, start_offset+i*MESSAGE_SIZE, i+NUM_SLOTS*res->threadId);    	    
+            post_receive_client(res, start_offset+i*MESSAGE_SIZE, i+NUM_SLOTS*res->threadId, 0);    	    
             if (i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS>=DATA_SIZE_PER_THREAD)
 	        next_offset[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
             else
 	        next_offset[i] = start_offset+i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS;
-            ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, start_offset+i*MESSAGE_SIZE, next_offset[i], i+NUM_SLOTS*res->threadId);
+            ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, start_offset+i*MESSAGE_SIZE, next_offset[i], i+NUM_SLOTS*res->threadId, 0);
             if (ret)
             {
 	        fprintf(stderr, "failed to post SR\n");
@@ -201,9 +203,19 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
+	client_config.isServer = false;
 	/* parse the last parameter (if exists) as the server name */
 	if (optind == argc - 1)
 		client_config.server_name = argv[optind];
+        char *token;
+	const char s[2] = ",";
+	token = strtok(client_config.server_name, s);
+	while( token != NULL ) {
+            client_config.peer_names[client_config.num_peers] = token;
+	    client_config.num_peers++;
+	    //printf( " %s\n", token);
+	    token = strtok(NULL, s);
+	}
 	/* print the used parameters for info*/
 	print_config(client_config);
 	/* init all of the resources, so cleanup will be easy */
@@ -224,6 +236,7 @@ int main(int argc, char *argv[])
 	}
 	fprintf(stdout, "start connected\n");
 	/* connect the QPs */
+
 	if (connect_qp(&res, client_config))
 	{
 		fprintf(stderr, "failed to connect QPs\n");
@@ -237,10 +250,12 @@ int main(int argc, char *argv[])
 		fprintf(stdout, "\ntest result is %d\n", rc);
 	        return rc;
 	}
+	std::cout<<"Number of aggregators: "<<res.num_socks<<"; Number of workers is "<<res.num_machines<<"; My ID is "<<res.myId<<std::endl;
 	printf("Connected.\n");
+	
 	// begin to send data 
-	int warmups = 0;
-	int num_rounds = 10;
+	int warmups = 10;
+	int num_rounds = 100;
         int round = 0;
 	struct timeval cur_time;
         unsigned long start_time_msec;
@@ -255,7 +270,7 @@ int main(int argc, char *argv[])
 	}
 	while(round<num_rounds+warmups){
 	    for (int i = 0; i< DATA_SIZE; i++)
-	        res.buf[i] = i%100*0.01;
+	        res.buf[i] = 0.01*(i%100);
 	    gettimeofday(&cur_time, NULL);
 	    wait();
 	    wait();
@@ -282,5 +297,6 @@ int main(int argc, char *argv[])
 	if (client_config.dev_name)
 		free((char *)client_config.dev_name);
 	fprintf(stdout, "\ntest result is %d\n", rc);
+	
 	return rc;
 }
