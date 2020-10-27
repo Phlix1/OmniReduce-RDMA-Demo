@@ -71,7 +71,7 @@ void handle_recv(struct resources *res)
 			count[slot]--;
 #ifdef DEBUG
 			fprintf(stdout, "next block: %d; slot: %d; qp_num:%u\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS, wc[i].qp_num);
-			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[wid][slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
+			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
 			std::cout<<"after receiving from "<<wid<<std::endl;
                         std::cout<<"##### aggregator state #####\n";
 			for(int w=0; w<res->num_socks; w++){
@@ -242,10 +242,17 @@ int main(int argc, char *argv[])
 	
 	pthread_t threadIds[NUM_THREADS];
 	struct resources res_copy[NUM_THREADS];
+	pthread_attr_t attr;
+	cpu_set_t cpus;
+	pthread_attr_init(&attr);
+
 	for (int i=0; i<NUM_THREADS; i++) {
+	    CPU_ZERO(&cpus);
+	    CPU_SET(i+8, &cpus);
+	    pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
 	    memcpy(&res_copy[i], &res, sizeof(struct resources));
 	    res_copy[i].threadId = i;
-	    pthread_create(&threadIds[i], NULL, process_per_thread, &res_copy[i]);
+	    pthread_create(&threadIds[i], &attr, process_per_thread, &res_copy[i]);
 	}
 	for (int i=0; i<NUM_THREADS; i++) {
 	    pthread_join(threadIds[i], NULL);

@@ -137,6 +137,10 @@ void *process_per_thread(void *arg)
 ******************************************************************************/
 int main(int argc, char *argv[])
 {
+#ifdef DEBUG
+	int num_processors = sysconf(_SC_NPROCESSORS_ONLN);
+        std::cout<<"Number of processors: "<<num_processors<<std::endl;	
+#endif
 	struct resources res;
 	int rc = 1;
 	float desired_rate = 10.0; //unit: Gbps, the max value is 40G,otherwise MSG_SIZE is modified
@@ -262,11 +266,19 @@ int main(int argc, char *argv[])
         unsigned long diff_time_msec;
 	unsigned long avg_time_msec=0;
 	pthread_t threadIds[NUM_THREADS];
+
+	pthread_attr_t attr;
+	cpu_set_t cpus;
+	pthread_attr_init(&attr);
+
 	struct resources res_copy[NUM_THREADS];
 	for (int i=0; i<NUM_THREADS; i++) {
+	    CPU_ZERO(&cpus);
+	    CPU_SET(i+8, &cpus);
+	    pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
 	    memcpy(&res_copy[i], &res, sizeof(struct resources));
 	    res_copy[i].threadId = i;
-	    pthread_create(&threadIds[i], NULL, process_per_thread, &res_copy[i]);
+	    pthread_create(&threadIds[i], &attr, process_per_thread, &res_copy[i]);
 	}
 	while(round<num_rounds+warmups){
 	    for (int i = 0; i< DATA_SIZE; i++)
