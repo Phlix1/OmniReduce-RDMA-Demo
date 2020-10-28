@@ -17,19 +17,21 @@ void handle_recv(struct resources *res)
     uint32_t next_offset = 0;
     struct ibv_wc wc[MAX_CONCURRENT_WRITES * 2];
     uint32_t current_offset[NUM_SLOTS];
+    uint32_t slot_next_offset[NUM_SLOTS][res->num_socks];
+    uint32_t min_next_offset[NUM_SLOTS];
     int register_count[NUM_SLOTS];
     uint32_t slot_to_qps[NUM_SLOTS][res->num_socks];
-    int count[NUM_SLOTS];
     int set[NUM_SLOTS];
     for (int i=0; i<NUM_SLOTS; i++) {
 	register_count[i] = 0;
-	count[i] = res->num_socks;
-	set[NUM_SLOTS] = 0;
+	set[i] = 0;
+	min_next_offset[i] = 0;
     }
     for(int w=0; w<res->num_socks; w++)
     {
         for(int i=0; i<NUM_SLOTS; i++){
 	    current_offset[i] = start_offset+i*MESSAGE_SIZE;
+	    slot_next_offset[i][w] = 0;
         }
     }
     int first_burst = NUM_SLOTS*res->num_socks/res->num_machines;
@@ -49,30 +51,32 @@ void handle_recv(struct resources *res)
 			int ret = 0;
 			int slot = 0;
 			slot = (next_offset/MESSAGE_SIZE)%NUM_SLOTS;
+			int global_slot = slot+NUM_SLOTS*res->threadId;
+			int wid = get_workerid_by_qp_num(wc[i].qp_num);
 			if(register_count[slot]<res->num_socks){
-			    slot_to_qps[slot][register_count[slot]] = wc[i].qp_num;
+			    slot_to_qps[slot][wid] = wc[i].qp_num;
 #ifdef DEBUG
 			    fprintf(stdout, "QP : %u is registered in Slot %d\n", wc[i].qp_num, slot);
 #endif
 			    register_count[slot]++;
 			}
-			int global_slot = slot+NUM_SLOTS*res->threadId;
-			int wid = get_workerid_by_qp_num(wc[i].qp_num);
-                        if (count[slot]==res->num_socks){
-			    for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
-			        res->buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = res->buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
-			    }
+			for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
+			    res->buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] += res->buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
 			}
-			else {
-			    for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
-			        res->buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] += res->buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
-			    }
+			slot_next_offset[slot][wid] = wc[i].imm_data;
+			min_next_offset[slot] = slot_next_offset[slot][0];
+			for(int k=1; k<res->num_socks; k++){
+			    if(min_next_offset[slot] > slot_next_offset[slot][k])
+				min_next_offset[slot] = slot_next_offset[slot][k]; 
 			}
-			count[slot]--;
 #ifdef DEBUG
 			fprintf(stdout, "next block: %d; slot: %d; qp_num:%u\n", next_offset/MESSAGE_SIZE, (next_offset/MESSAGE_SIZE)%NUM_SLOTS, wc[i].qp_num);
-			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS);
+			fprintf(stdout, "threadid: %d; slot: %d; current offset: %d; nextoffset: %d; message size:%d; num slots:%d, min next offset:%d\n", res->threadId, slot+NUM_SLOTS*res->threadId, current_offset[slot], next_offset, MESSAGE_SIZE, NUM_SLOTS, min_next_offset[slot]);
 			std::cout<<"after receiving from "<<wid<<std::endl;
+                        std::cout<<"##### next offset of slot"<<slot<<" #####\n";
+			for(int w=0; w<res->num_socks; w++){
+			    std::cout<<"worker "<<w<<" : "<<slot_next_offset[slot][w]<<std::endl;
+			}
                         std::cout<<"##### aggregator state #####\n";
 			for(int w=0; w<res->num_socks; w++){
 			    std::cout<<"worker "<<w<<std::endl;
@@ -90,21 +94,29 @@ void handle_recv(struct resources *res)
 			}
 			std::cout<<"##########\n";
 #endif
-			if(count[slot]==0){
+			if(current_offset[slot]<min_next_offset[slot]){
+			    for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
+			        res->buf[(res->num_socks+(set[slot]+1)%2)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = 0.0;
+			    }
 			    for(int k=0; k<res->num_socks; k++){
-			        post_receive_server(res, global_slot, slot_to_qps[slot][k]);
-			        ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], next_offset, global_slot, slot_to_qps[slot][k], set[slot]);
+				if (min_next_offset[slot]==slot_next_offset[slot][k])
+			            post_receive_server(res, global_slot, slot_to_qps[slot][k]);
+			        ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], min_next_offset[slot], global_slot, slot_to_qps[slot][k], set[slot]);
 			        if(ret)
 			        {
 			            fprintf(stderr, "failed to post SR\n");
 		                    exit(1);
 			        }
 			    }
-			    if (next_offset<max_index)
-			        current_offset[slot] = next_offset;
-			    else
+			    if (min_next_offset[slot]<max_index) {
+			        current_offset[slot] = min_next_offset[slot];
+			    }
+			    else {
 			        current_offset[slot] = start_offset+slot*MESSAGE_SIZE;
-			    count[slot] = res->num_socks;
+			        for(int k=0; k<res->num_socks; k++){
+				    slot_next_offset[slot][k] = 0; 
+			        }
+			    }
 			    set[slot] = (set[slot]+1)%2;
 			}
 		    }												                        }

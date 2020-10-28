@@ -34,6 +34,8 @@
 #define DATA_SIZE_PER_THREAD (16*1024*1024)
 //#define DATA_SIZE_PER_THREAD (16)
 #define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
+#define BITMAP_SIZE_PER_THREAD (DATA_SIZE_PER_THREAD/MESSAGE_SIZE)
+#define BITMAP_SIZE (BITMAP_SIZE_PER_THREAD*NUM_THREADS)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 static inline uint64_t htonll(uint64_t x) { return bswap_64(x); }
 static inline uint64_t ntohll(uint64_t x) { return bswap_64(x); }
@@ -88,6 +90,7 @@ struct resources
 	struct ibv_qp **qp;				   /* QP handle */
 	struct ibv_mr *mr;				   /* MR handle for buf */
 	DATA_TYPE *buf;			    /* memory buffer pointer, used for RDMA and send ops */
+	int *bitmap;
 	int sock_status;				           /* TCP socket status */
 	int num_socks;
 	int num_machines;
@@ -104,7 +107,7 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num);
 int post_receive(struct resources *res);
 int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num);
-int post_receive_client(struct resources *res, uint32_t offset, int slot, uint32_t qp_num);
+int post_receive_client(struct resources *res, int slot, uint32_t qp_num);
 void resources_init(struct resources *res);
 int resources_create(struct resources *res, struct config_t config);
 int modify_qp_to_init(struct ibv_qp *qp, struct config_t config);

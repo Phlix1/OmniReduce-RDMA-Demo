@@ -597,7 +597,7 @@ int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num)
 #endif
 	return rc;
 }
-int post_receive_client(struct resources *res, uint32_t offset, int slot, uint32_t qp_num)
+int post_receive_client(struct resources *res, int slot, uint32_t qp_num)
 {
 	struct ibv_recv_wr rr;
 	struct ibv_sge sge;
@@ -815,7 +815,15 @@ int resources_create(struct resources *res, struct config_t config)
 		rc = 1;
 		goto resources_create_exit;
 	}
+	rc = posix_memalign(reinterpret_cast<void**>(&res->bitmap), cycle_buffer, (BITMAP_SIZE)*sizeof(int));
+	if (rc!=0)
+	{
+		fprintf(stderr, "failed to malloc %Zu bytes to memory bitmap\n", size);
+		rc = 1;
+		goto resources_create_exit;
+	}
 	memset(res->buf, 0, size*sizeof(DATA_TYPE));
+	memset(res->bitmap, 0, BITMAP_SIZE*sizeof(int));
 	/* register the memory buffer */
 	mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
 	res->mr = ibv_reg_mr(res->pd, res->buf, size*sizeof(DATA_TYPE), mr_flags);
