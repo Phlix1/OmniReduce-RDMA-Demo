@@ -37,10 +37,16 @@ void handle_recv(struct resources *res)
     int first_burst = NUM_SLOTS*res->num_socks/res->num_machines;
     for(int i=0; i<first_burst; i++) {
         post_receive_server(res, i%(NUM_QPS*res->num_socks)+NUM_QPS*res->num_socks*res->threadId, 0);
+#ifdef STATISTICS
+	increment_receive(res->threadId);
+#endif
     }
     while (1) {
         int ne = ibv_poll_cq(res->cq[res->threadId], MAX_CONCURRENT_WRITES * 2, (struct ibv_wc*)wc);
 	if (ne>0){
+#ifdef STATISTICS
+	show_stat();
+#endif
             for (int i = 0; i < ne; ++i)
 	    {
 	        if (wc[i].status == IBV_WC_SUCCESS)	
@@ -99,9 +105,16 @@ void handle_recv(struct resources *res)
 			        res->buf[(res->num_socks+(set[slot]+1)%2)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = 0.0;
 			    }
 			    for(int k=0; k<res->num_socks; k++){
-				if (min_next_offset[slot]==slot_next_offset[slot][k])
+				if (min_next_offset[slot]==slot_next_offset[slot][k]){
 			            post_receive_server(res, global_slot, slot_to_qps[slot][k]);
+#ifdef STATISTICS
+				    increment_receive(res->threadId);
+#endif
+				}
 			        ret = post_send_server(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, current_offset[slot], min_next_offset[slot], global_slot, slot_to_qps[slot][k], set[slot]);
+#ifdef STATISTICS
+				increment_send(res->threadId);
+#endif
 			        if(ret)
 			        {
 			            fprintf(stderr, "failed to post SR\n");

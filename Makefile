@@ -1,10 +1,10 @@
 .PHONY: clean
 
 #CFLAGS  := -Wall -g -DDEBUG -O3
-#-ftree-vectorize -fopt-info-vec-missed 
+#CFLAGS  := -Wall -g -O3 -DSTATISTICS
 CFLAGS  := -Wall -g -O3
 LD      := g++
-LDLIBS  := ${LDLIBS} -lrdmacm -libverbs -lpthread
+LDLIBS  := ${LDLIBS} -libverbs -lpthread
 
 APPS    := client server
 

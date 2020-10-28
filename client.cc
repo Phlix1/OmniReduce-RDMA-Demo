@@ -59,6 +59,9 @@ void handle_recv(struct resources *res, int slots)
 			    if (res->bitmap[imm_data/MESSAGE_SIZE]==1) {
 			        uint32_t next_offset = 0;
 			        post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
+#ifdef STATISTICS
+				increment_receive(res->threadId);
+#endif
 			        //if(imm_data+MESSAGE_SIZE*NUM_SLOTS-start_offset>=DATA_SIZE_PER_THREAD)
 			        //    next_offset = max_index[slot];
 			        //else
@@ -71,7 +74,10 @@ void handle_recv(struct resources *res, int slots)
 			        std::cout<<std::endl;
 #endif
 	                        ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, imm_data, next_offset, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
-			        if (ret)
+#ifdef STATISTICS
+			        increment_send(res->threadId);
+#endif
+				if (ret)
 	                        {
 		                    fprintf(stderr, "failed to post SR\n");
 				    exit(1);
@@ -79,6 +85,9 @@ void handle_recv(struct resources *res, int slots)
 			    }
 			    else {
 			        post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
+#ifdef STATISTICS
+				increment_receive(res->threadId);
+#endif
 			    }
 			}
 			else
@@ -120,13 +129,19 @@ void *process_per_thread(void *arg)
 	    break;
 	}	
         for (int i=0; i<first_burst; i++){
-            post_receive_client(res, i+NUM_SLOTS*res->threadId, 0);    	    
+            post_receive_client(res, i+NUM_SLOTS*res->threadId, 0);
+#ifdef STATISTICS
+	    increment_receive(res->threadId);
+#endif
             //if (i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS>=DATA_SIZE_PER_THREAD)
 	    //    next_offset[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
             //else
 	    //    next_offset[i] = start_offset+i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS;
             uint32_t next_offset = find_next_nonzero_block(res, start_offset+i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS);
 	    ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, start_offset+i*MESSAGE_SIZE, next_offset, i+NUM_SLOTS*res->threadId, 0);
+#ifdef STATISTICS
+	    increment_send(res->threadId);
+#endif
             if (ret)
             {
 	        fprintf(stderr, "failed to post SR\n");
@@ -360,6 +375,8 @@ int main(int argc, char *argv[])
 	if (client_config.dev_name)
 		free((char *)client_config.dev_name);
 	fprintf(stdout, "\ntest result is %d\n", rc);
-	
+#ifdef STATISTICS
+	show_stat();
+#endif
 	return rc;
 }

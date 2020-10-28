@@ -97,6 +97,9 @@ struct resources
 	int socks[10];						   /* TCP sockets file descriptor */
 	pthread_t cq_poller_thread;        /* thread to poll completion queue */
 };
+void increment_receive(int threadId);
+void increment_send(int threadId);
+void show_stat();
 int get_workerid_by_qp_num(uint32_t qp_num);
 int sock_connect(struct resources *res, struct config_t config);
 int sock_sync_data(int sock, int xfer_size, char *local_data, char *remote_data);

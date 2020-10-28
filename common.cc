@@ -20,6 +20,29 @@
 ******************************************************************************/
 std::unordered_map<uint32_t, uint32_t> qp_num_revert {};
 std::unordered_map<uint32_t, uint32_t> qp_num_to_peerid {};
+int receive_count[NUM_THREADS]={0};
+int send_count[NUM_THREADS]={0};
+void increment_receive(int threadId)
+{
+    receive_count[threadId]++;
+}
+void increment_send(int threadId)
+{
+    send_count[threadId]++;
+}
+void show_stat()
+{
+    int total_send = 0;
+    int total_receive = 0;
+    for (int i=0; i<NUM_THREADS; i++)
+    {
+        std::cout<<"Thread "<<i<<"---send: "<<send_count[i]<<"; receive: "<<receive_count[i]<<std::endl;
+	total_send += send_count[i];
+	total_receive += receive_count[i];
+    }
+    std::cout<<"Total send: "<<total_send<<std::endl;
+    std::cout<<"Total receive: "<<total_receive<<std::endl;
+}
 int get_workerid_by_qp_num(uint32_t qp_num)
 {
     return qp_num_to_peerid[qp_num];
