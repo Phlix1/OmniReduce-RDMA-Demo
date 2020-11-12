@@ -302,6 +302,8 @@ int main(int argc, char *argv[])
 	// begin to send data 
 	int warmups = 10;
 	int num_rounds = 100;
+	int print_freq = 10;
+	int print_count = 0;
         int round = 0;
 	struct timeval cur_time;
         unsigned long start_time_usec;
@@ -354,7 +356,6 @@ int main(int argc, char *argv[])
 	    std::cout<<std::endl;
 	    std::cout<<"**********\n";
 #endif
-	    gettimeofday(&cur_time, NULL);
 	    wait();
 	    wait();
 #ifdef DEBUG
@@ -364,17 +365,21 @@ int main(int argc, char *argv[])
 	    std::cout<<std::endl;
 	    std::cout<<"**********\n";
 #endif
-	    start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
-	    gettimeofday(&cur_time, NULL);
-	    diff_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec) - start_time_usec;
-	    if (round>=warmups){
-	        avg_time_usec += diff_time_usec;
-	        fprintf(stdout, "data size: %ld Bytes; time: %ld us; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_usec,(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000));
-		avg_bw += (DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000);
+	    if (round>=warmups and (round-warmups)%print_freq==0){
+		if ((round-warmups)/print_freq>0){
+	            gettimeofday(&cur_time, NULL);
+	            diff_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec) - start_time_usec;
+		    print_count ++;
+	            avg_time_usec += diff_time_usec/print_freq;
+		    avg_bw += print_freq*(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000);
+	            fprintf(stdout, "data size: %ld Bytes; time: %ld us; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_usec/print_freq, print_freq*(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000));
+		}
+	        gettimeofday(&cur_time, NULL);
+	        start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
 	    }
 	    round++;
 	}
-	fprintf(stdout, "data size: %ld Bytes; average time: %ld us; average alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,avg_time_usec/num_rounds,(avg_bw/num_rounds));
+	fprintf(stdout, "data size: %ld Bytes; average time: %ld us; average alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE), avg_time_usec/print_count, avg_bw/print_count);
 	shutdown_flag = true;
 	wait();
 	for (int i=0; i<NUM_THREADS; i++)
