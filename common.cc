@@ -1116,14 +1116,15 @@ int connect_qp(struct resources *res, struct config_t config)
 	    local_con_datas[i].rkey = htonl(res->mr->rkey);
 	    for(int j=0; j<res->num_socks*NUM_QPS*NUM_THREADS; j++)
 	        local_con_datas[i].qp_num[j] = htonl(res->qp[j]->qp_num);
+	    local_con_datas[i].lid = htons(res->port_attr.lid);
 	    memcpy(local_con_datas[i].gid, &my_gid, 16);
 #ifdef DEBUG
-	    fprintf(stdout, "Local address = 0x%" PRIx64 "\n", local_con_datas[i].addr);
-	    fprintf(stdout, "Local rkey = 0x%x\n", local_con_datas[i].rkey);
+	    fprintf(stdout, "Local address = 0x%" PRIx64 "\n", ntohll(local_con_datas[i].addr));
+	    fprintf(stdout, "Local rkey = 0x%x\n", ntohl(local_con_datas[i].rkey));
 	    for(int j=0; j<res->num_socks*NUM_QPS*NUM_THREADS; j++){
 	        fprintf(stdout, "Local QP number = 0x%x\n", ntohl(local_con_datas[i].qp_num[j]));
 	    }
-	    fprintf(stdout, "Local LID = 0x%x\n", local_con_datas[i].lid);
+	    fprintf(stdout, "Local LID = 0x%x\n", ntohs(local_con_datas[i].lid));
 #endif
 	}
 	for (int i=0; i<res->num_socks; i++)
