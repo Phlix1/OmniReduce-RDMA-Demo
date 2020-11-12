@@ -29,6 +29,7 @@ uint32_t find_next_nonzero_block(struct resources *res, uint32_t next_offset)
 }
 void handle_recv(struct resources *res, int slots)
 {
+    //uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
     uint32_t max_index[NUM_SLOTS];
     for(int i=0; i<NUM_SLOTS; i++){
         max_index[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
@@ -115,6 +116,8 @@ void wait() {
 }
 void *process_per_thread(void *arg)
 {
+    //struct timeval cur_time;
+    //unsigned long start_time_usec;
     struct resources *res = (struct resources *)arg;
     uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
     //uint32_t start_bitmap_offset = BITMAP_SIZE_PER_THREAD*res->threadId;
@@ -127,7 +130,8 @@ void *process_per_thread(void *arg)
 	if (shutdown_flag) {
 	    std::cout << "Thread "<<res->threadId<<" shutting down.\n";
 	    break;
-	}	
+	}
+        //gettimeofday(&cur_time, NULL);	
         for (int i=0; i<first_burst; i++){
             post_receive_client(res, i+NUM_SLOTS*res->threadId, 0);
 #ifdef STATISTICS
@@ -150,6 +154,9 @@ void *process_per_thread(void *arg)
             }
         }
         handle_recv(res, first_burst);
+	//start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
+	//gettimeofday(&cur_time, NULL);
+	//std::cout<<res->threadId<<":"<<(cur_time.tv_sec * 1000000) + (cur_time.tv_usec) - start_time_usec<<std::endl;
 	wait();
     }
     return NULL;
@@ -297,9 +304,10 @@ int main(int argc, char *argv[])
 	int num_rounds = 100;
         int round = 0;
 	struct timeval cur_time;
-        unsigned long start_time_msec;
-        unsigned long diff_time_msec;
-	unsigned long avg_time_msec=0;
+        unsigned long start_time_usec;
+        unsigned long diff_time_usec;
+	unsigned long avg_time_usec=0;
+	double avg_bw = 0.0;
 	pthread_t threadIds[NUM_THREADS];
 
 	pthread_attr_t attr;
@@ -321,20 +329,24 @@ int main(int argc, char *argv[])
 	srand(res.myId+1);
 	double density_ratio = 1.0;
 	double rnum = 0;
-	while(round<num_rounds+warmups){
-	    for (int i = 0; i< DATA_SIZE; i++)
-	        res.buf[i] = 0;
-	    for (int i = 0; i< BITMAP_SIZE; i++){
-		rnum = rand()%100/(double)101;
-		if (rnum < density_ratio)
-	            res.bitmap[i]=1;
-		else
-		    res.bitmap[i]=0;
-		if (res.bitmap[i]==1) {
-		    for (int j=0; j<MESSAGE_SIZE; j++)
-		        res.buf[i*MESSAGE_SIZE+j] = 0.01;
-		}
+	int non_zero_count = 0;
+	for (int i = 0; i< DATA_SIZE; i++)
+	    res.buf[i] = 0;
+	for (int i = 0; i< BITMAP_SIZE; i++){
+	    rnum = rand()%100/(double)101;
+	    if (rnum < density_ratio){
+	        res.bitmap[i]=1;
+		non_zero_count++;
 	    }
+            else {
+		res.bitmap[i]=0;
+	    }
+	    if (res.bitmap[i]==1) {
+		for (int j=0; j<MESSAGE_SIZE; j++)
+		    res.buf[i*MESSAGE_SIZE+j] = 0.01;
+	    }
+	}
+	while(round<num_rounds+warmups){
 #ifdef DEBUG
 	    std::cout<<"AllReduce Input data worker "<<res.myId<<" : "<<std::endl;
 	    for (int i = 0; i< DATA_SIZE; i++)
@@ -352,16 +364,17 @@ int main(int argc, char *argv[])
 	    std::cout<<std::endl;
 	    std::cout<<"**********\n";
 #endif
-	    start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
+	    start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
 	    gettimeofday(&cur_time, NULL);
-	    diff_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000) - start_time_msec;
+	    diff_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec) - start_time_usec;
 	    if (round>=warmups){
-	        avg_time_msec += diff_time_msec;
+	        avg_time_usec += diff_time_usec;
+	        fprintf(stdout, "data size: %ld Bytes; time: %ld us; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_usec,(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000));
+		avg_bw += (DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000);
 	    }
-	    fprintf(stdout, "data size: %ld Bytes; time: %ld ms; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_msec,(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/1000000/diff_time_msec);
 	    round++;
 	}
-	fprintf(stdout, "data size: %ld Bytes; average time: %ld ms; average alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,avg_time_msec/num_rounds,(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/1000000/((float)avg_time_msec/num_rounds));
+	fprintf(stdout, "data size: %ld Bytes; average time: %ld us; average alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,avg_time_usec/num_rounds,(avg_bw/num_rounds));
 	shutdown_flag = true;
 	wait();
 	for (int i=0; i<NUM_THREADS; i++)

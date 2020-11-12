@@ -1,8 +1,8 @@
 .PHONY: clean
 
-#CFLAGS  := -Wall -g -DDEBUG -O3
+#CFLAGS  := -Wall -g -DDEBUG -O3 -std=c++11
 #CFLAGS  := -Wall -g -O3 -DSTATISTICS
-CFLAGS  := -Wall -g -O3
+CFLAGS  := -Wall -g -O3 -std=c++11
 LD      := g++
 LDLIBS  := ${LDLIBS} -libverbs -lpthread
 
