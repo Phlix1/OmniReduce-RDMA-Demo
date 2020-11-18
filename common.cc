@@ -397,7 +397,17 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	DATA_TYPE *tmp = res->buf+offset;
+	//DATA_TYPE *tmp = res->buf+offset;
+	DATA_TYPE *tmp = res->comm_buf+MESSAGE_SIZE*slot;
+	//for(uint32_t i=0; i<len; i++)
+	//    res->comm_buf[MESSAGE_SIZE*slot+MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS*res->myId+i]=tmp[i];
+        memcpy(tmp, res->buf+offset, len*sizeof(DATA_TYPE));
+#ifdef DEBUG
+	std::cout<<"slot "<<slot<<";offset "<<offset<<"; sending: \n";
+	for (uint32_t i=0; i<len; i++)
+	    std::cout<<tmp[i]<<", ";
+        std::cout<<std::endl;
+#endif
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
 	sge.length = len*sizeof(DATA_TYPE);
@@ -479,8 +489,14 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	DATA_TYPE *tmp = res->buf+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*(res->num_socks+set)+slot*MESSAGE_SIZE;
+	DATA_TYPE *tmp = res->comm_buf+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*(res->num_socks+set)+slot*MESSAGE_SIZE;
 	//sge.addr = (uintptr_t)res->buf;
+#ifdef DEBUG
+	std::cout<<"sending: \n";
+	for (uint32_t i=0; i<len; i++)
+	    std::cout<<tmp[i]<<", ";
+        std::cout<<std::endl;
+#endif
 	sge.addr = (uintptr_t)tmp;
 	sge.length = len*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
@@ -496,7 +512,8 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	{
 		//sr.wr.rdma.remote_addr = res->remote_props.addr+offset*sizeof(DATA_TYPE);
 		//sr.wr.rdma.rkey = res->remote_props.rkey;
-                sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+offset*sizeof(DATA_TYPE);
+                //sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+offset*sizeof(DATA_TYPE);
+                sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+slot*MESSAGE_SIZE*sizeof(DATA_TYPE);
                 sr.wr.rdma.rkey = res->remote_props_array[mid].rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
@@ -588,7 +605,7 @@ int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num)
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
 	//sge.addr = (uintptr_t)(res->buf+slot*MESSAGE_SIZE);
-	sge.addr = (uintptr_t)(res->buf);
+	sge.addr = (uintptr_t)(res->comm_buf);
 	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
@@ -636,7 +653,8 @@ int post_receive_client(struct resources *res, int slot, uint32_t qp_num)
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
 	//DATA_TYPE*tmp = res->buf + offset*sizeof(DATA_TYPE);
-	sge.addr = (uintptr_t)res->buf;
+	//sge.addr = (uintptr_t)res->buf;
+	sge.addr = (uintptr_t)(res->comm_buf);
 	//sge.addr = (uintptr_t)tmp;
 	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
@@ -701,6 +719,7 @@ int resources_create(struct resources *res, struct config_t config)
 	//struct ibv_qp_init_attr qp_init_attr1;
 	struct ibv_device *ib_dev = NULL;
 	size_t size;
+	size_t comm_buf_size;
 	int i;
 	int mr_flags = 0;
 	int cq_size = 0;
@@ -825,31 +844,48 @@ int resources_create(struct resources *res, struct config_t config)
 	    }
 	}
 	/* allocate the memory buffer that will hold the data */
-	if (!config.isServer)
+	if (!config.isServer) {
 	    size = DATA_SIZE;
-	else
-	    size = res->num_socks*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
-	
-	rc = posix_memalign(reinterpret_cast<void**>(&res->buf), cycle_buffer, size*sizeof(DATA_TYPE));
-	//res->buf = (DATA_TYPE *)malloc(size*sizeof(DATA_TYPE));
-	if (rc!=0)
-	{
+	    comm_buf_size = NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS;
+	    rc = posix_memalign(reinterpret_cast<void**>(&res->buf), cycle_buffer, size*sizeof(DATA_TYPE));
+	    if (rc!=0)
+	    {
 		fprintf(stderr, "failed to malloc %Zu bytes to memory buffer\n", size);
 		rc = 1;
 		goto resources_create_exit;
-	}
-	rc = posix_memalign(reinterpret_cast<void**>(&res->bitmap), cycle_buffer, (BITMAP_SIZE)*sizeof(int));
-	if (rc!=0)
-	{
+	    }
+	    rc = posix_memalign(reinterpret_cast<void**>(&res->bitmap), cycle_buffer, (BITMAP_SIZE)*sizeof(int));
+	    if (rc!=0)
+	    {
 		fprintf(stderr, "failed to malloc %Zu bytes to memory bitmap\n", size);
 		rc = 1;
 		goto resources_create_exit;
+	    }
+	    memset(res->buf, 0, size*sizeof(DATA_TYPE));
+	    memset(res->bitmap, 0, BITMAP_SIZE*sizeof(int));
 	}
-	memset(res->buf, 0, size*sizeof(DATA_TYPE));
-	memset(res->bitmap, 0, BITMAP_SIZE*sizeof(int));
+	else {
+	    size = res->num_socks*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
+	    comm_buf_size = res->num_socks*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
+	}
+	rc = posix_memalign(reinterpret_cast<void**>(&res->comm_buf), cycle_buffer, comm_buf_size*sizeof(DATA_TYPE));
+	//res->buf = (DATA_TYPE *)malloc(size*sizeof(DATA_TYPE));
+	if (rc!=0)
+	{
+		fprintf(stderr, "failed to malloc %Zu bytes to communication memory buffer\n", size);
+		rc = 1;
+		goto resources_create_exit;
+	}
+	memset(res->comm_buf, 0, comm_buf_size*sizeof(DATA_TYPE));
 	/* register the memory buffer */
 	mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
-	res->mr = ibv_reg_mr(res->pd, res->buf, size*sizeof(DATA_TYPE), mr_flags);
+	if (!config.isServer) {
+	    res->mr = ibv_reg_mr(res->pd, res->comm_buf, comm_buf_size*sizeof(DATA_TYPE), mr_flags);
+	    //res->mr = ibv_reg_mr(res->pd, res->buf, size*sizeof(DATA_TYPE), mr_flags);
+	}
+	else {
+	    res->mr = ibv_reg_mr(res->pd, res->comm_buf, comm_buf_size*sizeof(DATA_TYPE), mr_flags);
+	}
 	if (!res->mr)
 	{
 		fprintf(stderr, "ibv_reg_mr failed with mr_flags=0x%x\n", mr_flags);
@@ -857,8 +893,14 @@ int resources_create(struct resources *res, struct config_t config)
 		goto resources_create_exit;
 	}
 #ifdef DEBUG
-	fprintf(stdout, "MR was registered with addr=%p, lkey=0x%x, rkey=0x%x, flags=0x%x\n",
-			res->buf, res->mr->lkey, res->mr->rkey, mr_flags);
+	if (!config.isServer) {
+	    fprintf(stdout, "MR was registered with addr=%p, lkey=0x%x, rkey=0x%x, flags=0x%x\n",
+			res->comm_buf, res->mr->lkey, res->mr->rkey, mr_flags);
+	}
+	else {
+	    fprintf(stdout, "MR was registered with addr=%p, lkey=0x%x, rkey=0x%x, flags=0x%x\n",
+			res->comm_buf, res->mr->lkey, res->mr->rkey, mr_flags);
+	}
 #endif
         for(int i=0; i<NUM_THREADS; i++)
 	{
@@ -910,6 +952,11 @@ resources_create_exit:
 		{
 			free(res->buf);
 			res->buf = NULL;
+		}
+		if (res->comm_buf)
+		{
+			free(res->comm_buf);
+			res->comm_buf = NULL;
 		}
                 for(int i=0; i<NUM_THREADS; i++) {
 		    if (res->cq[i])
@@ -1112,7 +1159,11 @@ int connect_qp(struct resources *res, struct config_t config)
 	{
 	    local_con_datas[i].remoteId = i;
 	    local_con_datas[i].num_machines = res->num_socks;
-	    local_con_datas[i].addr = htonll((uintptr_t)res->buf);
+	    if (config.isServer)
+	        local_con_datas[i].addr = htonll((uintptr_t)res->comm_buf);
+	    else
+	        local_con_datas[i].addr = htonll((uintptr_t)res->comm_buf);
+	        //local_con_datas[i].addr = htonll((uintptr_t)res->buf);
 	    local_con_datas[i].rkey = htonl(res->mr->rkey);
 	    for(int j=0; j<res->num_socks*NUM_QPS*NUM_THREADS; j++)
 	        local_con_datas[i].qp_num[j] = htonl(res->qp[j]->qp_num);

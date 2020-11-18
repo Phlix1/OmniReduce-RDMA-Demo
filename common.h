@@ -25,12 +25,15 @@
 #include <netdb.h>
 
 #define DATA_TYPE float
-#define MAX_CONCURRENT_WRITES 128
-#define QUEUE_DEPTH_DEFAULT 128
+#define MAX_CONCURRENT_WRITES 1024
+#define QUEUE_DEPTH_DEFAULT 1024
 #define MESSAGE_SIZE (256)
-#define NUM_SLOTS 64 //K*NUM_QPS*num_aggregators
+#define BLOCK_SIZE (256)
+#define BLOCKS_PER_MESSAGE (MESSAGE_SIZE/BLOCK_SIZE)
 #define NUM_QPS 1
 #define NUM_THREADS 8
+#define NUM_SLOTS (16*NUM_QPS*4) //K*NUM_QPS*num_aggregators
+//#define NUM_SLOTS 2
 #define DATA_SIZE_PER_THREAD (16*1024*1024)
 //#define DATA_SIZE_PER_THREAD (16)
 #define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
@@ -90,6 +93,7 @@ struct resources
 	struct ibv_qp **qp;				   /* QP handle */
 	struct ibv_mr *mr;				   /* MR handle for buf */
 	DATA_TYPE *buf;			    /* memory buffer pointer, used for RDMA and send ops */
+	DATA_TYPE *comm_buf;                /* memory buffer pointer, send/recv buffer */
 	int *bitmap;
 	int sock_status;				           /* TCP socket status */
 	int num_socks;

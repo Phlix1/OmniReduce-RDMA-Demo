@@ -1,4 +1,5 @@
 #include "common.h"
+//#include "mpi.h"
 bool shutdown_flag = false;
 int thread_count=NUM_THREADS+1;
 bool flag=false;
@@ -29,10 +30,12 @@ uint32_t find_next_nonzero_block(struct resources *res, uint32_t next_offset)
 }
 void handle_recv(struct resources *res, int slots)
 {
-    //uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
+    uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
     uint32_t max_index[NUM_SLOTS];
+    uint32_t current_offset[NUM_SLOTS];
     for(int i=0; i<NUM_SLOTS; i++){
         max_index[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
+        current_offset[i] = start_offset+i*MESSAGE_SIZE;
     }
     int finished_slots = 0;
     int ret = 0;
@@ -46,17 +49,25 @@ void handle_recv(struct resources *res, int slots)
 		{
 		    if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
 			uint32_t imm_data = wc[i].imm_data;
+			int slot = (imm_data/MESSAGE_SIZE)%NUM_SLOTS;
 #ifdef DEBUG
                         uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
-			fprintf(stdout, "threadId: %d; next index: %d; qp_num:%u\n", res->threadId, imm_data, wc[i].qp_num);
+			fprintf(stdout, "threadId: %d; slot: %d; current offset: %d;, next index: %d; qp_num:%u\n", res->threadId, slot, current_offset[slot], imm_data, wc[i].qp_num);
 			std::cout<<"receiving: ";
-                        for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
-			    std::cout<<res->buf[k+start_offset]<<", ";
+                        for (int k=slot*MESSAGE_SIZE+res->threadId*MESSAGE_SIZE*NUM_SLOTS; k<(slot+1)*MESSAGE_SIZE+res->threadId*MESSAGE_SIZE*NUM_SLOTS; k++)
+			    std::cout<<res->comm_buf[k]<<", ";
 			std::cout<<std::endl;
+#endif
+                        memcpy(res->buf+current_offset[slot], res->comm_buf+MESSAGE_SIZE*(slot+NUM_SLOTS*res->threadId), MESSAGE_SIZE*sizeof(DATA_TYPE));
+#ifdef DEBUG
+			        std::cout<<"data after receiving: ";
+			        for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
+			            std::cout<<res->buf[k+start_offset]<<", ";
+			        std::cout<<std::endl;
 #endif
 			if (imm_data<max_index[0])
 			{
-			    int slot = (imm_data/MESSAGE_SIZE)%NUM_SLOTS;
+                            current_offset[slot] = imm_data;
 			    if (res->bitmap[imm_data/MESSAGE_SIZE]==1) {
 			        uint32_t next_offset = 0;
 			        post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
@@ -91,8 +102,10 @@ void handle_recv(struct resources *res, int slots)
 #endif
 			    }
 			}
-			else
+			else {
+                            current_offset[slot] = start_offset+slot*MESSAGE_SIZE;
 			    finished_slots++;
+                        }
 		    }
 		}
 	    }
@@ -179,7 +192,12 @@ void *process_per_thread(void *arg)
 ******************************************************************************/
 int main(int argc, char *argv[])
 {
+        //MPI_Init(&argc, &argv);
+        int myrank=0, worldsize=1;
+        //MPI_Comm_size(MPI_COMM_WORLD, &worldsize);
+        //MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 #ifdef DEBUG
+        std::cout<<myrank<<" "<<worldsize<<std::endl;
 	int num_processors = sysconf(_SC_NPROCESSORS_ONLN);
         std::cout<<"Number of processors: "<<num_processors<<std::endl;	
 #endif
@@ -329,7 +347,7 @@ int main(int argc, char *argv[])
 	std::cout<<"Worker Id : "<<res.myId<<std::endl;
 #endif
 	srand(res.myId+1);
-	double density_ratio = 1.0;
+	double density_ratio = 0.1;
 	double rnum = 0;
 	int non_zero_count = 0;
 	for (int i = 0; i< DATA_SIZE; i++)
@@ -372,8 +390,10 @@ int main(int argc, char *argv[])
 		    print_count ++;
 	            avg_time_usec += diff_time_usec/print_freq;
 		    avg_bw += print_freq*(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000);
-	            fprintf(stdout, "data size: %ld Bytes; time: %ld us; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_usec/print_freq, print_freq*(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000));
+                    if(myrank==0)
+	                fprintf(stdout, "data size: %ld Bytes; time: %ld us; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_usec/print_freq, print_freq*(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000));
 		}
+                //MPI_Barrier(MPI_COMM_WORLD);
 	        gettimeofday(&cur_time, NULL);
 	        start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
 	    }

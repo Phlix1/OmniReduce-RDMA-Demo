@@ -67,7 +67,7 @@ void handle_recv(struct resources *res)
 			    register_count[slot]++;
 			}
 			for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
-			    res->buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] += res->buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
+			    res->comm_buf[(res->num_socks+set[slot])*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] += res->comm_buf[wid*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k];
 			}
 			slot_next_offset[slot][wid] = wc[i].imm_data;
 			min_next_offset[slot] = slot_next_offset[slot][0];
@@ -87,14 +87,14 @@ void handle_recv(struct resources *res)
 			for(int w=0; w<res->num_socks; w++){
 			    std::cout<<"worker "<<w<<std::endl;
 		 	    for(int k=0; k<MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS; k++){
-			        std::cout<<res->buf[w*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k]<<",";
+			        std::cout<<res->comm_buf[w*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k]<<",";
 			    }
 			    std::cout<<std::endl;
 			}
 			for(int s=0; s<2; s++){
 			    std::cout<<"set "<<s<<std::endl;
 		 	    for(int k=0; k<MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS; k++){
-			        std::cout<<res->buf[(s+res->num_socks)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k]<<",";
+			        std::cout<<res->comm_buf[(s+res->num_socks)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k]<<",";
 			    }
 			    std::cout<<std::endl;
 			}
@@ -102,7 +102,7 @@ void handle_recv(struct resources *res)
 #endif
 			if(current_offset[slot]<min_next_offset[slot]){
 			    for(int k=global_slot*MESSAGE_SIZE; k<global_slot*MESSAGE_SIZE+MESSAGE_SIZE; k++){
-			        res->buf[(res->num_socks+(set[slot]+1)%2)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = 0.0;
+			        res->comm_buf[(res->num_socks+(set[slot]+1)%2)*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+k] = 0.0;
 			    }
 			    for(int k=0; k<res->num_socks; k++){
 				if (min_next_offset[slot]==slot_next_offset[slot][k]){
