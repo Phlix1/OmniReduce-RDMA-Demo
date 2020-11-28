@@ -371,7 +371,7 @@ int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_
 #endif
 	return rc;
 }
-int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num)
+int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t * current_offsets, uint32_t * next_offsets, int slot, uint32_t qp_num, uint32_t buff_index)
 {
 	struct ibv_send_wr sr;
 	struct ibv_sge sge;
@@ -398,19 +398,30 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
 	//DATA_TYPE *tmp = res->buf+offset;
-	DATA_TYPE *tmp = res->comm_buf+MESSAGE_SIZE*slot;
+	DATA_TYPE *tmp = res->comm_buf+2*MESSAGE_SIZE*slot+buff_index*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS;
 	//for(uint32_t i=0; i<len; i++)
 	//    res->comm_buf[MESSAGE_SIZE*slot+MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS*res->myId+i]=tmp[i];
-        memcpy(tmp, res->buf+offset, len*sizeof(DATA_TYPE));
+        //memcpy(tmp, res->buf+offset, len*sizeof(DATA_TYPE));
+	for(uint32_t i=0; i<len; i++)
+            memcpy(tmp+i*BLOCK_SIZE, res->buf+current_offsets[i], BLOCK_SIZE*sizeof(DATA_TYPE));
+	memcpy(tmp+BLOCK_SIZE*len, next_offsets, len*sizeof(uint32_t));
+	    
+	//std::cout<<slot<<"send current offset: "<<current_offsets[0]<<"; next offset: "<<next_offsets[0]<<std::endl;
 #ifdef DEBUG
-	std::cout<<"slot "<<slot<<";offset "<<offset<<"; sending: \n";
-	for (uint32_t i=0; i<len; i++)
-	    std::cout<<tmp[i]<<", ";
+	std::cout<<"slot "<<slot<<std::endl;
+	std::cout<<len<<" current offsets and next offsets:"<<std::endl;
+	for (uint32_t i=0; i<len; i++) {
+	    std::cout<<"current offset: "<<current_offsets[i]<<"; next offset: "<<next_offsets[i];
+	}
+	std::cout<<std::endl;
+	for (uint32_t i=0; i<BLOCK_SIZE*len; i++) {
+	    std::cout<<tmp[i]<<"; ";
+	}
         std::cout<<std::endl;
 #endif
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)tmp;
-	sge.length = len*sizeof(DATA_TYPE);
+	sge.length = (BLOCK_SIZE*len+len)*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the send work request */
 	memset(&sr, 0, sizeof(sr));
@@ -424,12 +435,12 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	{
 		//sr.wr.rdma.remote_addr = res->remote_props.addr+MESSAGE_SIZE*slot*sizeof(DATA_TYPE);
 		//sr.wr.rdma.rkey = res->remote_props.rkey;
-		sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+MESSAGE_SIZE*slot*sizeof(DATA_TYPE)+MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS*res->myId*sizeof(DATA_TYPE);
+		sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+2*MESSAGE_SIZE*slot*sizeof(DATA_TYPE)+2*MESSAGE_SIZE*NUM_SLOTS*NUM_THREADS*res->myId*sizeof(DATA_TYPE);
 		sr.wr.rdma.rkey = res->remote_props_array[mid].rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
 	{
-		sr.imm_data = imm;
+		sr.imm_data = (len << 16) + ((uint32_t)slot);
 #ifdef DEBUG
 		//fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u, %s\n", imm, res->buf);
 #endif
@@ -463,7 +474,7 @@ int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 #endif
 	return rc;
 }
-int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num, int set)
+int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t * current_offsets, uint32_t * next_offsets, int slot, uint32_t qp_num, int set, uint32_t buff_index)
 {
 #ifdef DEBUG
 	//std::cout<<"qp num dict: "<<std::endl;
@@ -489,16 +500,26 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 	int rc;
 	/* prepare the scatter/gather entry */
 	memset(&sge, 0, sizeof(sge));
-	DATA_TYPE *tmp = res->comm_buf+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*(res->num_socks+set)+slot*MESSAGE_SIZE;
+	DATA_TYPE *tmp = res->comm_buf+NUM_SLOTS*(2*MESSAGE_SIZE)*NUM_THREADS*(res->num_socks+buff_index)+slot*(2*MESSAGE_SIZE);
 	//sge.addr = (uintptr_t)res->buf;
+	//for (uint32_t i=0; i<len; i++)
+        //    memcpy(tmp+i*BLOCK_SIZE, res->comm_buf+NUM_SLOTS*(2*MESSAGE_SIZE)*NUM_THREADS*(res->num_socks+1)+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*set+(current_offsets[i]/BLOCK_SIZE)%NUM_BLOCKS, BLOCK_SIZE*sizeof(DATA_TYPE));
+	//memcpy(tmp+BLOCK_SIZE*len, next_offsets, len*sizeof(uint32_t));
+	//std::cout<<qp_num<<" buff index: "<<buff_index<<"; current offset: "<<current_offsets[0]<<"; next offset: "<<next_offsets[0]<<" "<<tmp[BLOCK_SIZE*len]<<std::endl;
 #ifdef DEBUG
-	std::cout<<"sending: \n";
-	for (uint32_t i=0; i<len; i++)
-	    std::cout<<tmp[i]<<", ";
+	std::cout<<"slot "<<slot<<std::endl;
+	std::cout<<"current offsets :"<<std::endl;
+	for (uint32_t i=0; i<len; i++) {
+	    std::cout<<"current offset: "<<current_offsets[i]<<"; next offset: "<<next_offsets[i];
+	}
+	std::cout<<std::endl;
+	for (uint32_t i=0; i<BLOCK_SIZE*len; i++) {
+	    std::cout<<tmp[i]<<"; ";
+	}
         std::cout<<std::endl;
 #endif
 	sge.addr = (uintptr_t)tmp;
-	sge.length = len*sizeof(DATA_TYPE);
+	sge.length = (BLOCK_SIZE*len+len)*sizeof(DATA_TYPE);
 	sge.lkey = res->mr->lkey;
 	/* prepare the send work request */
 	memset(&sr, 0, sizeof(sr));
@@ -513,14 +534,14 @@ int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, 
 		//sr.wr.rdma.remote_addr = res->remote_props.addr+offset*sizeof(DATA_TYPE);
 		//sr.wr.rdma.rkey = res->remote_props.rkey;
                 //sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+offset*sizeof(DATA_TYPE);
-                sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+slot*MESSAGE_SIZE*sizeof(DATA_TYPE);
+                sr.wr.rdma.remote_addr = res->remote_props_array[mid].addr+(slot*(2*MESSAGE_SIZE)+buff_index*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS)*sizeof(DATA_TYPE);
                 sr.wr.rdma.rkey = res->remote_props_array[mid].rkey;
 	}
 	if (opcode == IBV_WR_RDMA_WRITE_WITH_IMM)
 	{
-		sr.imm_data = imm;
+		sr.imm_data = (len << 16) + ((uint32_t)slot);
 #ifdef DEBUG
-		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u\n", imm);
+		fprintf(stdout, "IBV_WR_RDMA_WRITE_WITH_IMM : %u\n", sr.imm_data);
 #endif
 	}
 	/* there is a Receive Request in the responder side, so we won't get any into RNR flow */
@@ -590,8 +611,8 @@ int post_receive(struct resources *res)
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
 #ifdef DEBUG
-	else
-		fprintf(stdout, "Receive Request was posted\n");
+	//else
+	//	fprintf(stdout, "Receive Request was posted\n");
 #endif
 	return rc;
 }
@@ -606,7 +627,8 @@ int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num)
 	memset(&sge, 0, sizeof(sge));
 	//sge.addr = (uintptr_t)(res->buf+slot*MESSAGE_SIZE);
 	sge.addr = (uintptr_t)(res->comm_buf);
-	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
+	//sge.length = 2*MESSAGE_SIZE*sizeof(DATA_TYPE);
+	sge.length = 0;
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
 	memset(&rr, 0, sizeof(rr));
@@ -656,7 +678,8 @@ int post_receive_client(struct resources *res, int slot, uint32_t qp_num)
 	//sge.addr = (uintptr_t)res->buf;
 	sge.addr = (uintptr_t)(res->comm_buf);
 	//sge.addr = (uintptr_t)tmp;
-	sge.length = MESSAGE_SIZE*sizeof(DATA_TYPE);
+	//sge.length = 2*MESSAGE_SIZE*sizeof(DATA_TYPE);
+	sge.length = 0;
 	sge.lkey = res->mr->lkey;
 	/* prepare the receive work request */
 	memset(&rr, 0, sizeof(rr));
@@ -668,10 +691,10 @@ int post_receive_client(struct resources *res, int slot, uint32_t qp_num)
 	rc = ibv_post_recv(res->qp[qid], &rr, &bad_wr);
 	if (rc)
 		fprintf(stderr, "failed to post RR\n");
-#ifdef DEBUG
-	else
-		fprintf(stdout, "Receive Request was posted\n");
-#endif
+//#ifdef DEBUG
+//	else
+//		fprintf(stdout, "Receive Request was posted\n");
+//#endif
 	return rc;
 }
 /******************************************************************************
@@ -846,7 +869,7 @@ int resources_create(struct resources *res, struct config_t config)
 	/* allocate the memory buffer that will hold the data */
 	if (!config.isServer) {
 	    size = DATA_SIZE;
-	    comm_buf_size = NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS;
+	    comm_buf_size = NUM_SLOTS*(MESSAGE_SIZE*2)*NUM_THREADS*COMM_BUFF_NUM;
 	    rc = posix_memalign(reinterpret_cast<void**>(&res->buf), cycle_buffer, size*sizeof(DATA_TYPE));
 	    if (rc!=0)
 	    {
@@ -861,12 +884,20 @@ int resources_create(struct resources *res, struct config_t config)
 		rc = 1;
 		goto resources_create_exit;
 	    }
+	    rc = posix_memalign(reinterpret_cast<void**>(&res->recv_event_count), cycle_buffer, (NUM_SLOTS*NUM_THREADS)*sizeof(int));
+	    if (rc!=0)
+	    {
+		fprintf(stderr, "failed to malloc %Zu bytes to memory recv_event_count\n", size);
+		rc = 1;
+		goto resources_create_exit;
+	    }
 	    memset(res->buf, 0, size*sizeof(DATA_TYPE));
 	    memset(res->bitmap, 0, BITMAP_SIZE*sizeof(int));
+	    memset(res->recv_event_count, 0, NUM_SLOTS*NUM_THREADS*sizeof(int));
 	}
 	else {
 	    size = res->num_socks*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
-	    comm_buf_size = res->num_socks*NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
+	    comm_buf_size = (res->num_socks+COMM_BUFF_NUM)*NUM_SLOTS*(MESSAGE_SIZE*2)*NUM_THREADS+NUM_SLOTS*MESSAGE_SIZE*NUM_THREADS*2;
 	}
 	rc = posix_memalign(reinterpret_cast<void**>(&res->comm_buf), cycle_buffer, comm_buf_size*sizeof(DATA_TYPE));
 	//res->buf = (DATA_TYPE *)malloc(size*sizeof(DATA_TYPE));

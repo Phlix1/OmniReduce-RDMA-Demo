@@ -19,23 +19,31 @@ uint32_t find_next_nonzero_block(struct resources *res, uint32_t next_offset)
 {
     uint32_t next_nonzero_offset = next_offset;
     uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
-    int slot = (next_nonzero_offset/MESSAGE_SIZE)%NUM_SLOTS;
-    uint32_t max_index = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+slot*MESSAGE_SIZE;
+    int bid = (next_nonzero_offset/BLOCK_SIZE)%NUM_BLOCKS;
+    uint32_t max_index = (UINT32_MAX/BLOCK_SIZE/NUM_BLOCKS-1)*NUM_BLOCKS*BLOCK_SIZE+bid*BLOCK_SIZE;
     while (next_nonzero_offset-start_offset<DATA_SIZE_PER_THREAD) {
-        if (res->bitmap[next_nonzero_offset/MESSAGE_SIZE]==1)
+        if (res->bitmap[next_nonzero_offset/BLOCK_SIZE]==1)
 	    return next_nonzero_offset;
-	next_nonzero_offset += MESSAGE_SIZE*NUM_SLOTS;
+	next_nonzero_offset += BLOCK_SIZE*NUM_BLOCKS;
     }
     return max_index;
 }
 void handle_recv(struct resources *res, int slots)
 {
     uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
-    uint32_t max_index[NUM_SLOTS];
-    uint32_t current_offset[NUM_SLOTS];
+    uint32_t max_index[NUM_BLOCKS];
+    uint32_t current_offset[NUM_BLOCKS];
+    int finished_blocks[NUM_SLOTS];
+    uint32_t buff_index[NUM_SLOTS];
+    uint32_t * current_offsets = (uint32_t *)malloc(sizeof(uint32_t)*MESSAGE_SIZE);
+    uint32_t * next_offsets = (uint32_t *)malloc(sizeof(uint32_t)*MESSAGE_SIZE);
+    for(int i=0; i<NUM_BLOCKS; i++){
+        max_index[i] = (UINT32_MAX/BLOCK_SIZE/NUM_BLOCKS-1)*NUM_BLOCKS*BLOCK_SIZE+i*BLOCK_SIZE;
+        current_offset[i] = start_offset+i*BLOCK_SIZE;
+    }
     for(int i=0; i<NUM_SLOTS; i++){
-        max_index[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
-        current_offset[i] = start_offset+i*MESSAGE_SIZE;
+        finished_blocks[i] = 0;
+	buff_index[i] = 0;
     }
     int finished_slots = 0;
     int ret = 0;
@@ -43,49 +51,79 @@ void handle_recv(struct resources *res, int slots)
     while (finished_slots<slots) {
         int ne = ibv_poll_cq(res->cq[res->threadId], MAX_CONCURRENT_WRITES * 2, (struct ibv_wc*)wc);
 	if (ne>0){
+	    //std::cout<<"packet num: "<<ne<<std::endl;
 	    for (int i = 0; i < ne; ++i)
 	    {
 	        if (wc[i].status == IBV_WC_SUCCESS)
 		{
 		    if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-			uint32_t imm_data = wc[i].imm_data;
-			int slot = (imm_data/MESSAGE_SIZE)%NUM_SLOTS;
+#ifdef STATISTICS
+			increment_receive(res->threadId);
+#endif
+			uint32_t block_num = wc[i].imm_data >> 16;
+			int slot = (wc[i].imm_data & 0x0000FFFF)%NUM_SLOTS;
+	                post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
+			uint32_t * meta_ptr = (uint32_t *)(res->comm_buf+BLOCK_SIZE*block_num+slot*(2*MESSAGE_SIZE)+res->threadId*(2*MESSAGE_SIZE)*NUM_SLOTS+buff_index[slot]*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS);
+			//fprintf(stdout, "threadId: %d; block num: %d; slot: %d; qp_num:%u, next: %d\n", res->threadId, block_num, slot, wc[i].qp_num, meta_ptr[0]);
+			//fprintf(stdout, "threadId: %d; block num: %d; slot: %d; qp_num:%u\n", res->threadId, block_num, slot, wc[i].qp_num);
+			//std::cout<<"next offsets: ";
+			//for (uint32_t k=0; k<block_num; k++)
+			//    std::cout<<meta_ptr[k]<<", ";
+			//std::cout<<std::endl;
+			//fprintf(stdout, "threadId: %d; block num: %d; slot: %d; qp_num:%u\n", res->threadId, block_num, slot, wc[i].qp_num);
 #ifdef DEBUG
-                        uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
-			fprintf(stdout, "threadId: %d; slot: %d; current offset: %d;, next index: %d; qp_num:%u\n", res->threadId, slot, current_offset[slot], imm_data, wc[i].qp_num);
+			fprintf(stdout, "threadId: %d; block num: %d; slot: %d; qp_num:%u\n", res->threadId, block_num, slot, wc[i].qp_num);
 			std::cout<<"receiving: ";
-                        for (int k=slot*MESSAGE_SIZE+res->threadId*MESSAGE_SIZE*NUM_SLOTS; k<(slot+1)*MESSAGE_SIZE+res->threadId*MESSAGE_SIZE*NUM_SLOTS; k++)
+                        for (uint32_t k=slot*(2*MESSAGE_SIZE)+res->threadId*(2*MESSAGE_SIZE)*NUM_SLOTS+buff_index[slot]*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS; k<BLOCK_SIZE*block_num+slot*(2*MESSAGE_SIZE)+res->threadId*(2*MESSAGE_SIZE)*NUM_SLOTS+buff_index[slot]*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS; k++)
 			    std::cout<<res->comm_buf[k]<<", ";
+			std::cout<<"next offsets: ";
+			for (uint32_t k=0; k<block_num; k++)
+			    std::cout<<meta_ptr[k]<<", ";
 			std::cout<<std::endl;
 #endif
-                        memcpy(res->buf+current_offset[slot], res->comm_buf+MESSAGE_SIZE*(slot+NUM_SLOTS*res->threadId), MESSAGE_SIZE*sizeof(DATA_TYPE));
+                        int nonzero_block_num = 0;
+			//std::cout<<slot<<" buff index: "<<buff_index[slot]<<"; nexttsi : "<<meta_ptr[0]<<"; "<<res->comm_buf[BLOCK_SIZE*block_num+slot*(2*MESSAGE_SIZE)+res->threadId*(2*MESSAGE_SIZE)*NUM_SLOTS+buff_index[slot]*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS]<<std::endl;
+			for (uint32_t k=0; k<block_num; k++){
+			    int bid = (meta_ptr[k]/BLOCK_SIZE)%NUM_BLOCKS;
+                            memcpy(res->buf+current_offset[bid], res->comm_buf+(2*MESSAGE_SIZE)*(slot+NUM_SLOTS*res->threadId)+k*BLOCK_SIZE+buff_index[slot]*(2*MESSAGE_SIZE)*NUM_SLOTS*NUM_THREADS, BLOCK_SIZE*sizeof(DATA_TYPE));
+			    current_offset[bid] = meta_ptr[k];
+			    if (current_offset[bid]<max_index[0]) {
+				if (res->bitmap[current_offset[bid]/BLOCK_SIZE]==1) {
+				    current_offsets[nonzero_block_num] = current_offset[bid];
+				    next_offsets[nonzero_block_num] = find_next_nonzero_block(res, current_offset[bid]+BLOCK_SIZE*NUM_BLOCKS);
+				    nonzero_block_num++;
+				}
+			    }
+			    else {
+				current_offset[bid] = start_offset+bid*BLOCK_SIZE;
+				finished_blocks[slot]++;
+			    }
+			}
+			buff_index[slot] = (buff_index[slot]+1)%COMM_BUFF_NUM;
 #ifdef DEBUG
 			        std::cout<<"data after receiving: ";
 			        for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
 			            std::cout<<res->buf[k+start_offset]<<", ";
 			        std::cout<<std::endl;
 #endif
-			if (imm_data<max_index[0])
+			if (finished_blocks[slot] < BLOCKS_PER_MESSAGE)
 			{
-                            current_offset[slot] = imm_data;
-			    if (res->bitmap[imm_data/MESSAGE_SIZE]==1) {
-			        uint32_t next_offset = 0;
-			        post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
-#ifdef STATISTICS
-				increment_receive(res->threadId);
-#endif
+			    if (nonzero_block_num>0) {
+			        //post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
+//#ifdef STATISTICS
+//				increment_receive(res->threadId);
+//#endif
 			        //if(imm_data+MESSAGE_SIZE*NUM_SLOTS-start_offset>=DATA_SIZE_PER_THREAD)
 			        //    next_offset = max_index[slot];
 			        //else
 			        //    next_offset = imm_data+MESSAGE_SIZE*NUM_SLOTS;
-			        next_offset = find_next_nonzero_block(res, imm_data+MESSAGE_SIZE*NUM_SLOTS);
 #ifdef DEBUG
 			        std::cout<<"sending: ";
 			        for (int k=0; k<DATA_SIZE_PER_THREAD ;k++)
 			            std::cout<<res->buf[k+start_offset]<<", ";
 			        std::cout<<std::endl;
 #endif
-	                        ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, imm_data, next_offset, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
+	                        ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, nonzero_block_num, current_offsets, next_offsets, slot+NUM_SLOTS*res->threadId, wc[i].qp_num, buff_index[slot]);
 #ifdef STATISTICS
 			        increment_send(res->threadId);
 #endif
@@ -96,14 +134,13 @@ void handle_recv(struct resources *res, int slots)
 	                        }
 			    }
 			    else {
-			        post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
-#ifdef STATISTICS
-				increment_receive(res->threadId);
-#endif
+			        //post_receive_client(res, slot+NUM_SLOTS*res->threadId, wc[i].qp_num);
+//#ifdef STATISTICS
+//				increment_receive(res->threadId);
+//#endif
 			    }
 			}
 			else {
-                            current_offset[slot] = start_offset+slot*MESSAGE_SIZE;
 			    finished_slots++;
                         }
 		    }
@@ -135,9 +172,14 @@ void *process_per_thread(void *arg)
     uint32_t start_offset = DATA_SIZE_PER_THREAD*res->threadId;
     //uint32_t start_bitmap_offset = BITMAP_SIZE_PER_THREAD*res->threadId;
     //uint32_t * next_offset = (uint32_t *)malloc(sizeof(uint32_t)*NUM_SLOTS);
+    uint32_t * current_offsets = (uint32_t *)malloc(sizeof(uint32_t)*MESSAGE_SIZE);
+    uint32_t * next_offsets = (uint32_t *)malloc(sizeof(uint32_t)*MESSAGE_SIZE);
     int ret = 0;
     int n_messages = DATA_SIZE_PER_THREAD/MESSAGE_SIZE;
     int first_burst = (n_messages < NUM_SLOTS) ? n_messages:NUM_SLOTS;
+    for (int i=0; i<first_burst; i++)
+        for(int j=0; j<PREPOST_NUM; j++)
+            post_receive_client(res, i+NUM_SLOTS*res->threadId, 0);
     while (true) {
         wait();
 	if (shutdown_flag) {
@@ -146,16 +188,20 @@ void *process_per_thread(void *arg)
 	}
         //gettimeofday(&cur_time, NULL);	
         for (int i=0; i<first_burst; i++){
-            post_receive_client(res, i+NUM_SLOTS*res->threadId, 0);
-#ifdef STATISTICS
-	    increment_receive(res->threadId);
-#endif
+            //for(int j=0; j<PREPOST_NUM; j++)
+            //    post_receive_client(res, i+NUM_SLOTS*res->threadId, 0);
+//#ifdef STATISTICS
+//	    increment_receive(res->threadId);
+//#endif
             //if (i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS>=DATA_SIZE_PER_THREAD)
 	    //    next_offset[i] = (UINT32_MAX/MESSAGE_SIZE/NUM_SLOTS-1)*NUM_SLOTS*MESSAGE_SIZE+i*MESSAGE_SIZE;
             //else
 	    //    next_offset[i] = start_offset+i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS;
-            uint32_t next_offset = find_next_nonzero_block(res, start_offset+i*MESSAGE_SIZE+MESSAGE_SIZE*NUM_SLOTS);
-	    ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, MESSAGE_SIZE, start_offset+i*MESSAGE_SIZE, next_offset, i+NUM_SLOTS*res->threadId, 0);
+	    for (int j=0; j<BLOCKS_PER_MESSAGE; j++) {
+		current_offsets[j] = start_offset+i*MESSAGE_SIZE+j*BLOCK_SIZE;
+		next_offsets[j] = find_next_nonzero_block(res, current_offsets[j]+BLOCK_SIZE*NUM_BLOCKS);
+	    }
+	    ret = post_send_client(res, IBV_WR_RDMA_WRITE_WITH_IMM, BLOCKS_PER_MESSAGE, current_offsets, next_offsets, i+NUM_SLOTS*res->threadId, 0, 0);
 #ifdef STATISTICS
 	    increment_send(res->threadId);
 #endif
@@ -320,7 +366,7 @@ int main(int argc, char *argv[])
 	// begin to send data 
 	int warmups = 10;
 	int num_rounds = 100;
-	int print_freq = 10;
+	int print_freq = 1;
 	int print_count = 0;
         int round = 0;
 	struct timeval cur_time;
@@ -347,14 +393,14 @@ int main(int argc, char *argv[])
 	std::cout<<"Worker Id : "<<res.myId<<std::endl;
 #endif
 	srand(res.myId+1);
-	double density_ratio = 0.1;
+	double density_ratio = 1.0;
 	double rnum = 0;
 	int non_zero_count = 0;
 	for (int i = 0; i< DATA_SIZE; i++)
 	    res.buf[i] = 0;
 	for (int i = 0; i< BITMAP_SIZE; i++){
 	    rnum = rand()%100/(double)101;
-	    if (rnum < density_ratio){
+	    if (rnum < density_ratio && res.myId!=-1){
 	        res.bitmap[i]=1;
 		non_zero_count++;
 	    }
@@ -362,8 +408,8 @@ int main(int argc, char *argv[])
 		res.bitmap[i]=0;
 	    }
 	    if (res.bitmap[i]==1) {
-		for (int j=0; j<MESSAGE_SIZE; j++)
-		    res.buf[i*MESSAGE_SIZE+j] = 0.01;
+		for (int j=0; j<BLOCK_SIZE; j++)
+		    res.buf[i*BLOCK_SIZE+j] = 0.01;
 	    }
 	}
 	while(round<num_rounds+warmups){
@@ -396,6 +442,7 @@ int main(int argc, char *argv[])
                 //MPI_Barrier(MPI_COMM_WORLD);
 	        gettimeofday(&cur_time, NULL);
 	        start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
+		//std::cout<<"round over: "<<round<<std::endl;
 	    }
 	    round++;
 	}

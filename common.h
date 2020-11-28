@@ -25,19 +25,20 @@
 #include <netdb.h>
 
 #define DATA_TYPE float
-#define MAX_CONCURRENT_WRITES 1024
-#define QUEUE_DEPTH_DEFAULT 1024
-#define MESSAGE_SIZE (256)
+#define MAX_CONCURRENT_WRITES 4096
+#define QUEUE_DEPTH_DEFAULT 4096
+#define COMM_BUFF_NUM 256
+#define MESSAGE_SIZE (1024)
 #define BLOCK_SIZE (256)
 #define BLOCKS_PER_MESSAGE (MESSAGE_SIZE/BLOCK_SIZE)
 #define NUM_QPS 1
 #define NUM_THREADS 8
-#define NUM_SLOTS (16*NUM_QPS*4) //K*NUM_QPS*num_aggregators
-//#define NUM_SLOTS 2
+#define NUM_SLOTS (8*NUM_QPS*2) //K*NUM_QPS*num_aggregators
+#define NUM_BLOCKS (NUM_SLOTS*BLOCKS_PER_MESSAGE)
 #define DATA_SIZE_PER_THREAD (16*1024*1024)
-//#define DATA_SIZE_PER_THREAD (16)
+#define PREPOST_NUM (QUEUE_DEPTH_DEFAULT/NUM_SLOTS)
 #define DATA_SIZE (DATA_SIZE_PER_THREAD*NUM_THREADS)
-#define BITMAP_SIZE_PER_THREAD (DATA_SIZE_PER_THREAD/MESSAGE_SIZE)
+#define BITMAP_SIZE_PER_THREAD (DATA_SIZE_PER_THREAD/BLOCK_SIZE)
 #define BITMAP_SIZE (BITMAP_SIZE_PER_THREAD*NUM_THREADS)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 static inline uint64_t htonll(uint64_t x) { return bswap_64(x); }
@@ -95,6 +96,7 @@ struct resources
 	DATA_TYPE *buf;			    /* memory buffer pointer, used for RDMA and send ops */
 	DATA_TYPE *comm_buf;                /* memory buffer pointer, send/recv buffer */
 	int *bitmap;
+	int *recv_event_count;
 	int sock_status;				           /* TCP socket status */
 	int num_socks;
 	int num_machines;
@@ -110,8 +112,8 @@ int sock_sync_data(int sock, int xfer_size, char *local_data, char *remote_data)
 void *poll_cq(struct resources *res);
 void poll_cq_main(struct resources *res);
 int post_send(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset);
-int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num, int set);
-int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t offset, uint32_t imm, int slot, uint32_t qp_num);
+int post_send_server(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t * current_offsets, uint32_t * next_offsets, int slot, uint32_t qp_num, int set, uint32_t buff_index);
+int post_send_client(struct resources *res, ibv_wr_opcode opcode, uint32_t len, uint32_t * current_offsets, uint32_t * next_offsets, int slot, uint32_t qp_num, uint32_t buff_index);
 int post_receive(struct resources *res);
 int post_receive_server(struct resources *res, int qp_id, uint32_t qp_num);
 int post_receive_client(struct resources *res, int slot, uint32_t qp_num);

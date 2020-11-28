@@ -1,7 +1,7 @@
 .PHONY: clean
 
-#CFLAGS  := -Wall -g -DDEBUG -O3 -std=c++11
-#CFLAGS  := -Wall -g -O3 -DSTATISTICS
+#CFLAGS  := -Wall -g -DDEBUG -O3 -DSTATISTICS -std=c++11
+#CFLAGS  := -Wall -g -O3 -DSTATISTICS -std=c++11
 CFLAGS  := -Wall -g -O3 -std=c++11
 LD      := g++
 #LD      := mpicxx
