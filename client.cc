@@ -1,5 +1,6 @@
 #include "common.h"
 //#include "mpi.h"
+//#define CHECK
 bool shutdown_flag = false;
 int thread_count=NUM_THREADS+1;
 bool flag=false;
@@ -183,7 +184,7 @@ void *process_per_thread(void *arg)
     while (true) {
         wait();
 	if (shutdown_flag) {
-	    std::cout << "Thread "<<res->threadId<<" shutting down.\n";
+	    //std::cout << "Thread "<<res->threadId<<" shutting down.\n";
 	    break;
 	}
         //gettimeofday(&cur_time, NULL);	
@@ -249,7 +250,7 @@ int main(int argc, char *argv[])
 #endif
 	struct resources res;
 	int rc = 1;
-	float desired_rate = 10.0; //unit: Gbps, the max value is 40G,otherwise MSG_SIZE is modified
+        double density_ratio = 1.0;
 	/* parse the command line parameters */
 	while (1)
 	{
@@ -260,7 +261,7 @@ int main(int argc, char *argv[])
 		long_options_tmp[2].name="ib-port";long_options_tmp[2].has_arg=1;long_options_tmp[2].val='i';
 		long_options_tmp[3].name="gid-idx";long_options_tmp[3].has_arg=1;long_options_tmp[3].val='g';
 		long_options_tmp[4].name="service-level";long_options_tmp[4].has_arg=1;long_options_tmp[4].val='s';
-		long_options_tmp[5].name="desired-rate";long_options_tmp[5].has_arg=1;long_options_tmp[5].val='r';
+		long_options_tmp[5].name="density-ratio";long_options_tmp[5].has_arg=1;long_options_tmp[5].val='r';
 		long_options_tmp[6].name="help";long_options_tmp[6].has_arg=0;long_options_tmp[6].val='\0';
 		long_options_tmp[7].name="NULL";long_options_tmp[7].has_arg=0;long_options_tmp[7].val='\0';
 		c = getopt_long(argc, argv, "p:d:i:g:s:r:h:", long_options_tmp, NULL);
@@ -299,10 +300,10 @@ int main(int argc, char *argv[])
 			}
 			break;
 		case 'r':
-			desired_rate = strtoul(optarg, NULL, 0);
-			if (desired_rate == 0)
+			density_ratio = strtod(optarg, NULL);
+			if (density_ratio < 0)
 			{
-				desired_rate = 10;
+				density_ratio = 1.0;
 			}
 			break;
 		case 'h':
@@ -365,7 +366,7 @@ int main(int argc, char *argv[])
 	
 	// begin to send data 
 	int warmups = 10;
-	int num_rounds = 100;
+	int num_rounds = 101;
 	int print_freq = 1;
 	int print_count = 0;
         int round = 0;
@@ -383,7 +384,7 @@ int main(int argc, char *argv[])
 	struct resources res_copy[NUM_THREADS];
 	for (int i=0; i<NUM_THREADS; i++) {
 	    CPU_ZERO(&cpus);
-	    CPU_SET(i+8, &cpus);
+	    CPU_SET(i+10, &cpus);
 	    pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
 	    memcpy(&res_copy[i], &res, sizeof(struct resources));
 	    res_copy[i].threadId = i;
@@ -393,11 +394,15 @@ int main(int argc, char *argv[])
 	std::cout<<"Worker Id : "<<res.myId<<std::endl;
 #endif
 	srand(res.myId+1);
-	double density_ratio = 1.0;
 	double rnum = 0;
 	int non_zero_count = 0;
-	for (int i = 0; i< DATA_SIZE; i++)
+        DATA_TYPE *input = (DATA_TYPE *)malloc(DATA_SIZE*sizeof(DATA_TYPE));
+        DATA_TYPE *output = (DATA_TYPE *)malloc(DATA_SIZE*sizeof(DATA_TYPE));
+	for (int i = 0; i< DATA_SIZE; i++) {
 	    res.buf[i] = 0;
+            input[i] = 0;
+        }
+        std::cout<<"density: "<<density_ratio<<std::endl;
 	for (int i = 0; i< BITMAP_SIZE; i++){
 	    rnum = rand()%100/(double)101;
 	    if (rnum < density_ratio && res.myId!=-1){
@@ -408,8 +413,10 @@ int main(int argc, char *argv[])
 		res.bitmap[i]=0;
 	    }
 	    if (res.bitmap[i]==1) {
-		for (int j=0; j<BLOCK_SIZE; j++)
+		for (int j=0; j<BLOCK_SIZE; j++){
 		    res.buf[i*BLOCK_SIZE+j] = 0.01;
+                    input[i*BLOCK_SIZE+j] = 0.01;
+                }
 	    }
 	}
 	while(round<num_rounds+warmups){
@@ -439,6 +446,23 @@ int main(int argc, char *argv[])
                     if(myrank==0)
 	                fprintf(stdout, "data size: %ld Bytes; time: %ld us; alg bw: %f GB/s\n", DATA_SIZE*sizeof(DATA_TYPE) ,diff_time_usec/print_freq, print_freq*(DATA_SIZE)*sizeof(DATA_TYPE)*1.0/(1024*1024*1024)/((double)diff_time_usec/1000000));
 		}
+#ifdef CHECK
+                MPI_Allreduce(input, output, DATA_SIZE, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+                int r = 0;
+		for(int i=0; i<DATA_SIZE; i++){
+                    if(output[i]!=res.buf[i]){
+		        std::cout<<"error: "<<output[i]<<"<---->"<<res.buf[i]<<std::endl;
+                        r = 1;
+                        break;
+                    }
+                }
+                if(r)
+                    exit(1);
+                else
+                    std::cout<<"check OK"<<std::endl;
+                for(int i=0; i<DATA_SIZE; i++)
+                    res.buf[i] = input[i];
+#endif
                 //MPI_Barrier(MPI_COMM_WORLD);
 	        gettimeofday(&cur_time, NULL);
 	        start_time_usec = (cur_time.tv_sec * 1000000) + (cur_time.tv_usec);
